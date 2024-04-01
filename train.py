@@ -8,14 +8,13 @@ import torch.nn as nn
 import torch
 import numpy as np
 
-from model import RL_Policy, Semantic_Mapping
-from utils.storage import GlobalRolloutStorage
+from model import Semantic_Mapping, RL_Transformer_Policy
+from utils.storage import GlobalTransformerStorage
 from envs import make_vec_envs
 from arguments import get_args
 import algo
 
 os.environ["OMP_NUM_THREADS"] = "1"
-
 
 def main():
     args = get_args()
@@ -47,7 +46,7 @@ def main():
     num_episodes = int(args.num_eval_episodes)
     device = args.device = torch.device("cuda:0" if args.cuda else "cpu")
 
-    g_masks = torch.ones(num_scenes).float().to(device)
+    g_masks = torch.ones(num_scenes).bool().to(device)
 
     best_g_reward = -np.inf
 
@@ -209,14 +208,10 @@ def main():
     # Global policy observation space
     ngc = 8 + args.num_sem_categories
     es = 2
-    g_observation_space = gym.spaces.Box(0, 1,
-                                         (ngc,
-                                          local_w,
-                                          local_h), dtype='uint8')
+    g_observation_space = gym.spaces.Box(0, 1, (ngc, local_w, local_h), dtype='uint8') # Map Size: (8 + cat) * M * M
 
     # Global policy action space
-    g_action_space = gym.spaces.Box(low=0.0, high=0.99,
-                                    shape=(2,), dtype=np.float32)
+    g_action_space = gym.spaces.Box(low=0.0, high=0.99, shape=(2,), dtype=np.float32)
 
     # Global policy recurrent layer size
     g_hidden_size = args.global_hidden_size
@@ -224,15 +219,16 @@ def main():
     # Semantic Mapping
     sem_map_module = Semantic_Mapping(args).to(device)
     sem_map_module.eval()
-
+    
     # Global policy
-    g_policy = RL_Policy(g_observation_space.shape, g_action_space,
-                         model_type=1,
-                         base_kwargs={'recurrent': args.use_recurrent_global,
-                                      'hidden_size': g_hidden_size,
-                                      'num_sem_categories': ngc - 8
-                                      }).to(device)
-    g_agent = algo.PPO(g_policy, args.clip_param, args.ppo_epoch,
+    g_policy = RL_Transformer_Policy(g_observation_space.shape, 
+        g_action_space, 
+        model_type=1,
+        base_kwargs={
+            'hidden_size': g_hidden_size,
+            'num_sem_categories': ngc - 8
+    }).to(device)
+    g_agent = algo.PPOTransformer(g_policy, args.clip_param, args.ppo_epoch,
                        args.num_mini_batch, args.value_loss_coef,
                        args.entropy_coef, lr=args.lr, eps=args.eps,
                        max_grad_norm=args.max_grad_norm)
@@ -242,11 +238,14 @@ def main():
     intrinsic_rews = torch.zeros(num_scenes).to(device)
     extras = torch.zeros(num_scenes, 2)
 
-    # Storage
-    g_rollouts = GlobalRolloutStorage(args.num_global_steps,
-                                      num_scenes, g_observation_space.shape,
-                                      g_action_space, g_policy.rec_state_size,
-                                      es).to(device)
+    # Transformer Storage: RGBD Image & Observation Map
+    g_transformer = GlobalTransformerStorage(args.num_global_steps, 
+                                        num_scenes, (4, *obs.cpu().numpy().shape[2:]), g_observation_space.shape,
+                                        g_action_space, es).to(device) 
+    # GlobalRolloutStorage(args.num_global_steps,
+    #                                   num_scenes, g_observation_space.shape,
+    #                                   g_action_space, g_policy.rec_state_size,
+    #                                   es).to(device)
 
     if args.load != "0":
         print("Loading model {}".format(args.load))
@@ -258,12 +257,9 @@ def main():
         g_policy.eval()
 
     # Predict semantic map from frame 1
-    poses = torch.from_numpy(np.asarray(
-        [infos[env_idx]['sensor_pose'] for env_idx in range(num_scenes)])
-    ).float().to(device)
+    poses = torch.from_numpy(np.asarray([infos[env_idx]['sensor_pose'] for env_idx in range(num_scenes)])).float().to(device)
 
-    _, local_map, _, local_pose = \
-        sem_map_module(obs, poses, local_map, local_pose)
+    _, local_map, _, local_pose = sem_map_module(obs, poses, local_map, local_pose)
 
     # Compute Global policy input
     locs = local_pose.cpu().numpy()
@@ -290,22 +286,23 @@ def main():
     extras[:, 0] = global_orientation[:, 0]
     extras[:, 1] = goal_cat_id
 
-    g_rollouts.obs[0].copy_(global_input)
-    g_rollouts.extras[0].copy_(extras)
+    g_transformer.obs[:, 0].copy_(obs[:, :4, ...])
+    g_transformer.maps[:, 0].copy_(global_input)
+    g_transformer.extras[:, 0].copy_(extras)
 
     # Run Global Policy (global_goals = Long-Term Goal)
-    g_value, g_action, g_action_log_prob, g_rec_states = \
-        g_policy.act(
-            g_rollouts.obs[0],
-            g_rollouts.rec_states[0],
-            g_rollouts.masks[0],
-            extras=g_rollouts.extras[0],
-            deterministic=False
-        )
+    g_value, g_action, g_action_log_prob, _ = g_policy.act(
+        g_transformer.obs,
+        g_transformer.maps,
+        g_transformer.masks,
+        g_transformer.positional_embedding,
+        extras=g_transformer.extras,
+        deterministic=False
+    )
 
     cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
     global_goals = [[int(action[0] * local_w), int(action[1] * local_h)]
-                    for action in cpu_actions]
+                    for action in cpu_actions[:, 0, -1, ...]]
     global_goals = [[min(x, int(local_w - 1)), min(y, int(local_h - 1))]
                     for x, y in global_goals]
 
@@ -346,9 +343,9 @@ def main():
 
         # ------------------------------------------------------------------
         # Reinitialize variables when episode ends
-        l_masks = torch.FloatTensor([ 0 if x else 1 for x in done ]).to(device)
+        l_masks = torch.BoolTensor([ False if x else True for x in done ]).to(device)
         g_masks *= l_masks
-
+        
         for e, x in enumerate(done):
             if x:
                 spl = infos[e]['spl']
@@ -378,8 +375,7 @@ def main():
              in range(num_scenes)])
         ).float().to(device)
 
-        _, local_map, _, local_pose = \
-            sem_map_module(obs, poses, local_map, local_pose)
+        _, local_map, _, local_pose = sem_map_module(obs, poses, local_map, local_pose)
 
         locs = local_pose.cpu().numpy()
         planner_pose_inputs[:, :3] = locs + origins
@@ -402,10 +398,8 @@ def main():
                 else:
                     update_intrinsic_rew(e)
 
-                full_map[e, :, lmb[e, 0]:lmb[e, 1], lmb[e, 2]:lmb[e, 3]] = \
-                    local_map[e]
-                full_pose[e] = local_pose[e] + \
-                    torch.from_numpy(origins[e]).to(device).float()
+                full_map[e, :, lmb[e, 0]:lmb[e, 1], lmb[e, 2]:lmb[e, 3]] = local_map[e]
+                full_pose[e] = local_pose[e] + torch.from_numpy(origins[e]).to(device).float()
 
                 locs = full_pose[e].cpu().numpy()
                 r, c = locs[1], locs[0]
@@ -423,16 +417,13 @@ def main():
                 local_map[e] = full_map[e, :,
                                         lmb[e, 0]:lmb[e, 1],
                                         lmb[e, 2]:lmb[e, 3]]
-                local_pose[e] = full_pose[e] - \
-                    torch.from_numpy(origins[e]).to(device).float()
+                local_pose[e] = full_pose[e] - torch.from_numpy(origins[e]).to(device).float()
 
             locs = local_pose.cpu().numpy()
             for e in range(num_scenes):
                 global_orientation[e] = int((locs[e, 2] + 180.0) / 5.)
             global_input[:, 0:4, :, :] = local_map[:, 0:4, :, :]
-            global_input[:, 4:8, :, :] = \
-                nn.MaxPool2d(args.global_downscaling)(
-                    full_map[:, 0:4, :, :])
+            global_input[:, 4:8, :, :] = nn.MaxPool2d(args.global_downscaling)(full_map[:, 0:4, :, :])
             global_input[:, 8:, :, :] = local_map[:, 4:, :, :].detach()
             goal_cat_id = torch.from_numpy(np.asarray(
                 [infos[env_idx]['goal_cat_id'] for env_idx
@@ -447,9 +438,8 @@ def main():
             g_reward += args.intrinsic_rew_coeff * intrinsic_rews.detach()
 
             g_process_rewards += g_reward.cpu().numpy()
-            g_total_rewards = g_process_rewards * \
-                (1 - g_masks.cpu().numpy())
-            g_process_rewards *= g_masks.cpu().numpy()
+            g_total_rewards = g_process_rewards * (1 - g_masks.float().cpu().numpy())
+            g_process_rewards *= g_masks.float().cpu().numpy()
             per_step_g_rewards.append(np.mean(g_reward.cpu().numpy()))
 
             if np.sum(g_total_rewards) != 0:
@@ -459,24 +449,25 @@ def main():
 
             # Add samples to global policy storage
             if step == 0:
-                g_rollouts.obs[0].copy_(global_input)
-                g_rollouts.extras[0].copy_(extras)
+                g_transformer.obs[0].copy_(obs[:, :4, ...])
+                g_transformer.maps[0].copy_(global_input)
+                g_transformer.extras[0].copy_(extras)
             else:
-                g_rollouts.insert(
-                    global_input, g_rec_states,
+                g_transformer.insert(
+                    obs[:, :4, ...], global_input,
                     g_action, g_action_log_prob, g_value,
                     g_reward, g_masks, extras
                 )
 
             # Sample long-term goal from global policy
-            g_value, g_action, g_action_log_prob, g_rec_states = \
-                g_policy.act(
-                    g_rollouts.obs[g_step + 1],
-                    g_rollouts.rec_states[g_step + 1],
-                    g_rollouts.masks[g_step + 1],
-                    extras=g_rollouts.extras[g_step + 1],
-                    deterministic=False
-                )
+            g_value, g_action, g_action_log_prob, _ = g_policy.act(
+                g_transformer.obs,
+                g_transformer.maps,
+                g_transformer.masks,
+                g_transformer.positional_embedding,
+                extras=g_transformer.extras,
+                deterministic=False
+            )
             cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
             global_goals = [[int(action[0] * local_w),
                              int(action[1] * local_h)]
@@ -486,7 +477,7 @@ def main():
                             for x, y in global_goals]
 
             g_reward = 0
-            g_masks = torch.ones(num_scenes).float().to(device)
+            g_masks = torch.ones(num_scenes).bool().to(device)
 
         # ------------------------------------------------------------------
 
@@ -534,20 +525,20 @@ def main():
                 and l_step == args.num_local_steps - 1:
             if not args.eval:
                 g_next_value = g_policy.get_value(
-                    g_rollouts.obs[-1],
-                    g_rollouts.rec_states[-1],
-                    g_rollouts.masks[-1],
-                    extras=g_rollouts.extras[-1]
+                    g_transformer.obs[-1],
+                    g_transformer.maps[-1],
+                    g_transformer.masks[-1],
+                    g_transformer.positional_embedding,
+                    extras=g_transformer.extras[-1]
                 ).detach()
 
-                g_rollouts.compute_returns(g_next_value, args.use_gae,
-                                           args.gamma, args.tau)
+                g_transformer.compute_returns(g_next_value, args.use_gae, args.gamma, args.tau)
                 g_value_loss, g_action_loss, g_dist_entropy = \
-                    g_agent.update(g_rollouts)
+                    g_agent.update(g_transformer)
                 g_value_losses.append(g_value_loss)
                 g_action_losses.append(g_action_loss)
                 g_dist_entropies.append(g_dist_entropy)
-            g_rollouts.after_update()
+            g_transformer.after_update()
 
         torch.set_grad_enabled(False)
         # ------------------------------------------------------------------
@@ -626,11 +617,8 @@ def main():
         # Save best models
         if (step * num_scenes) % args.save_interval < \
                 num_scenes:
-            if len(g_episode_rewards) >= 1000 and \
-                    (np.mean(g_episode_rewards) >= best_g_reward) \
-                    and not args.eval:
-                torch.save(g_policy.state_dict(),
-                           os.path.join(log_dir, "model_best.pth"))
+            if len(g_episode_rewards) >= 1000 and (np.mean(g_episode_rewards) >= best_g_reward) and not args.eval:
+                torch.save(g_policy.state_dict(), os.path.join(log_dir, "model_best.pth"))
                 best_g_reward = np.mean(g_episode_rewards)
 
         # Save periodic models
@@ -638,9 +626,7 @@ def main():
                 num_scenes:
             total_steps = step * num_scenes
             if not args.eval:
-                torch.save(g_policy.state_dict(),
-                           os.path.join(dump_dir,
-                                        "periodic_{}.pth".format(total_steps)))
+                torch.save(g_policy.state_dict(), os.path.join(dump_dir, "periodic_{}.pth".format(total_steps)))
         # ------------------------------------------------------------------
 
     # Print and save model performance numbers during evaluation

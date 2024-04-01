@@ -119,7 +119,7 @@ class RolloutStorage(object):
                     -1, self.extras_size)[indices]
                 if self.has_extras else None,
             }
-
+    
     def recurrent_generator(self, advantages, num_mini_batch):
 
         num_processes = self.rewards.size(1)
@@ -183,7 +183,6 @@ class RolloutStorage(object):
                 'rec_states': torch.stack(rec_states, 1).view(N, -1),
             }
 
-
 class GlobalRolloutStorage(RolloutStorage):
 
     def __init__(self, num_steps, num_processes, obs_shape, action_space,
@@ -201,3 +200,125 @@ class GlobalRolloutStorage(RolloutStorage):
         super(GlobalRolloutStorage, self).insert(
             obs, rec_states, actions,
             action_log_probs, value_preds, rewards, masks)
+
+class TransformerStorage(object):
+    def __init__(self, num_steps, num_processes, obs_shape, map_shape, action_space, gamma=0.99):
+        if action_space.__class__.__name__ == 'Discrete':
+            self.n_actions = 1
+            action_type = torch.long
+        else:
+            self.n_actions = action_space.shape[0]
+            action_type = torch.float32
+        
+        self.gamma = gamma
+        self.num_processes = num_processes
+        self.num_steps = num_steps
+        self.step = 0 ## Step Index
+        ### step > num_steps : shift overall variables
+        self.has_extras = False
+        self.extras_size = None
+        ## Using num_processes as Batch Size
+        ## Image Observation: RGB Image
+        self.obs = torch.zeros(num_processes, num_steps + 1, *obs_shape)
+        ## Map Observation: K*M*M Tensor
+        self.maps = torch.zeros(num_processes, num_steps + 1, *map_shape)
+        ## Reccurent State: Image Embedding (+) 3D Embedding (+) Action State (+) Pose State
+        ## Mask for Transformer
+        self.masks = torch.ones(num_processes, num_steps + 1).bool()
+        self.positional_embedding = self._build_pos_embedding(gamma, 1)
+        ## Reward & Value function & Returns for PPO  
+        self.rewards = torch.zeros(num_steps, num_processes)
+        self.value_preds = torch.zeros(num_steps + 1, num_processes)
+        self.returns = torch.zeros(num_steps + 1, num_processes)
+        ## Action Probability & Action for PPO
+        self.action_log_probs = torch.zeros(num_steps, num_processes)
+        self.actions = torch.zeros((num_steps, num_processes, self.n_actions), dtype=action_type)
+    
+    @property
+    def get_steps(self):
+        '''get storage length'''
+        return self.step, self.num_steps    
+        
+    def _build_pos_embedding(self, gamma, steps):
+        _b = torch.pow(gamma, torch.arange(self.num_steps + 1))
+        idx = ((steps - 1) - torch.arange(steps)).float()
+        _b[:steps] = idx
+        k = torch.pow(gamma, _b)
+        k[steps:] = torch.zeros(self.num_steps - steps + 1)
+        ret = k.unsqueeze(0)
+        return ret
+    
+    def to(self, device):
+        self.obs = self.obs.to(device)
+        self.maps = self.maps.to(device)
+        self.rewards = self.rewards.to(device)
+        self.value_preds = self.value_preds.to(device)
+        self.returns = self.returns.to(device)
+        self.action_log_probs = self.action_log_probs.to(device)
+        self.actions = self.actions.to(device)
+        self.masks = self.masks.to(device)
+        self.positional_embedding = self.positional_embedding.to(device)
+        if self.has_extras:
+            self.extras = self.extras.to(device)
+        return self
+        
+    def compute_returns(self, next_value, use_gae, gamma, tau):
+        if use_gae:
+            self.value_preds[:, -1] = next_value
+            gae = 0
+            for step in reversed(range(self.rewards.size(0))):
+                delta = self.rewards[:, step] + gamma \
+                    * self.value_preds[:, step + 1] * self.masks[:, step + 1] \
+                    - self.value_preds[:, step]
+                gae = delta + gamma * tau * self.masks[:, step + 1] * gae
+                self.returns[:, step] = gae + self.value_preds[:, step]
+        else:
+            self.returns[:, -1] = next_value
+            for step in reversed(range(self.rewards.size(1))):
+                self.returns[:, step] = self.returns[:, step + 1] * gamma * self.masks[:, step + 1] + self.rewards[:, step]
+    
+    def insert(self, obs, map, actions, action_log_probs, value_preds, rewards, masks):
+        self.obs[:, self.step + 1].copy_(obs)
+        self.maps[:, self.step + 1].copy_(map)
+        self.actions[:, self.step].copy_(actions.view(-1, self.n_actions))
+        self.action_log_probs[:, self.step].copy_(action_log_probs)
+        self.value_preds[:, self.step].copy_(value_preds)
+        self.rewards[:, self.step].copy_(rewards)
+        self.masks[:, self.step + 1].copy_(masks)
+
+        self.step = (self.step + 1) % self.num_steps
+        self.positional_embedding = self._build_pos_embedding(self.gamma, self.step)
+    
+    def after_update(self):
+        self.obs[:, 0].copy_(self.obs[-1])
+        self.maps[:, 0].copy_(self.maps[-1])
+        self.masks[:, 0].copy_(self.masks[-1])
+        if self.has_extras:
+            self.extras[:, 0].copy_(self.extras[-1])
+    
+    def feed_forward_generator(self, advantages):
+        return {
+            'obs': self.obs[:, :-1],
+            'maps': self.maps[:, :-1],
+            'pos_emb': self.positional_embedding,
+            'actions': self.actions.view(-1, self.n_actions),
+            'value_preds': self.value_preds[:, :-1].view(-1),
+            'returns': self.returns[:, :-1].view(-1),
+            'masks': self.masks[:, :-1].view(-1),
+            'old_action_log_probs': self.action_log_probs.view(-1),
+            'adv_targ': advantages.view(-1),
+            'extras': self.extras[:, :-1].view(-1, self.extras_size) if self.has_extras else None,
+        }
+
+class GlobalTransformerStorage(TransformerStorage):
+    def __init__(self, num_steps, num_processes, obs_shape, map_shape, action_space, extra_size):
+        super(GlobalTransformerStorage, self).__init__(num_steps, num_processes, obs_shape, map_shape, action_space)
+        self.extras = torch.zeros((num_processes, num_steps + 1, extra_size), dtype=torch.long)
+        self.has_extras = True
+        self.extras_size = extra_size
+        
+    def insert(self, obs, maps, actions, action_log_probs, value_preds, rewards, masks, extras):
+        self.extras[self.step + 1].copy_(extras)
+        super(GlobalTransformerStorage, self).insert(obs, maps, actions, action_log_probs, value_preds, rewards, masks)
+    
+    

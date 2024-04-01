@@ -6,7 +6,10 @@ import numpy as np
 from utils.distributions import Categorical, DiagGaussian
 from utils.model import get_grid, ChannelPool, Flatten, NNBase
 import envs.utils.depth_utils as du
-
+from layers.conv_layer import Conv3dMap
+from layers.transformer import Transformer
+from layers.embed_layer import ResNetCLIPEncoder
+from gym import spaces
 
 class Goal_Oriented_Semantic_Policy(NNBase):
 
@@ -54,7 +57,10 @@ class Goal_Oriented_Semantic_Policy(NNBase):
             x, rnn_hxs = self._forward_gru(x, rnn_hxs, masks)
 
         x = nn.ReLU()(self.linear2(x))
-
+        print("Input Shape: ", inputs.shape)
+        print("Output x Shape: ", x.shape)
+        print("Extra Shape: ", extras.shape)
+        print("Recurrent Shape: ", rnn_hxs.shape)
         return self.critic_linear(x).squeeze(-1), x, rnn_hxs
 
 
@@ -128,6 +134,90 @@ class RL_Policy(nn.Module):
 
         return value, action_log_probs, dist_entropy, rnn_hxs
 
+class TransformerPolicy(nn.Module):
+    def __init__(self, map_shape, hidden_size=512, num_sem_categories=16):
+        super(TransformerPolicy, self).__init__()
+        
+        self.transformer_net = Transformer(d_model=4096)
+        self.map3d_emb = Conv3dMap(map_shape, 2048, num_sem_categories, hidden_size)
+        self.image_clip = ResNetCLIPEncoder(device=torch.device('cuda'))
+        
+        # self.linear1 = nn.Linear()
+        self.critic_linear = nn.Linear(4096, 1)
+        self.orientation_emb = nn.Embedding(72, 2048)
+        self.goal_emb = nn.Embedding(num_sem_categories, 2048)
+    
+    @property
+    def output_size(self):
+        return 4096
+    
+    def forward(self, x, x_map, masks, extras, pos_emb):
+        
+        num_process, num_steps = x.shape[:2]
+        img_emb = self.image_clip(x.view(-1, *x.shape[2:])).view(num_process, num_steps, -1)
+        map_emb = self.map3d_emb(x_map.view(-1, *x_map.shape[2:])).view(num_process, num_steps, -1)
+        orientation_emb = self.orientation_emb(extras[..., 0].view(-1, 1)).view(num_process, num_steps, -1)
+        goal_emb = self.goal_emb(extras[..., 1].view(-1, 1)).view(num_process, num_steps, -1)
+        
+        scene_emb = torch.cat([img_emb, map_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
+        tgt_emb = torch.cat([orientation_emb, goal_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
+        
+        out, _ = self.transformer_net(scene_emb, tgt_emb, mask=masks, query_embed=pos_emb, pos_embed=pos_emb)
+        _critic = self.critic_linear(out.permute(2, 0, 1).view(-1, 4096)).view(num_process, num_steps, -1)
+        return _critic.squeeze(-1), scene_emb, map_emb
+
+class RL_Transformer_Policy(nn.Module):
+    def __init__(self, map_shape, action_space, model_type=0, base_kwargs=None):
+        super(RL_Transformer_Policy, self).__init__()
+        if base_kwargs is None:
+            base_kwargs = {}
+
+        if model_type == 1:
+            self.network = TransformerPolicy(map_shape, **base_kwargs)
+        else:
+            raise NotImplementedError
+
+        if action_space.__class__.__name__ == "Discrete":
+            num_outputs = action_space.n
+            self.dist = Categorical(self.network.output_size, num_outputs)
+        elif action_space.__class__.__name__ == "Box":
+            num_outputs = action_space.shape[0]
+            self.dist = DiagGaussian(self.network.output_size, num_outputs)
+        else:
+            raise NotImplementedError
+
+        self.model_type = model_type
+
+    def forward(self, inputs, maps, masks, extras, pos_emb):
+        return self.network(inputs, maps, masks, extras, pos_emb)
+
+    def act(self, inputs, maps, masks, pos_emb, extras=None, deterministic=False):
+
+        value, actor_features, map_emb = self(inputs, maps, masks, extras, pos_emb)
+        dist = self.dist(actor_features)
+        
+        if deterministic:
+            action = dist.mode()
+        else:
+            action = dist.sample()
+        action_log_probs = dist.log_probs(action)
+
+        return value, action, action_log_probs, map_emb
+
+    def get_value(self, inputs, maps, masks, pos_emb, extras=None):
+        value, _, _ = self(inputs, maps, masks, extras, pos_emb)
+        return value
+
+    def evaluate_actions(self, inputs, maps, masks, pos_emb, action, extras=None):
+
+        value, actor_features, map_emb = self(inputs, maps, masks, extras, pos_emb)
+        dist = self.dist(actor_features)
+
+        action_log_probs = dist.log_probs(action)
+        dist_entropy = dist.entropy().mean()
+
+        return value, action_log_probs, dist_entropy, map_emb
+    
 
 class Semantic_Mapping(nn.Module):
 
