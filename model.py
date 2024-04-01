@@ -142,7 +142,6 @@ class TransformerPolicy(nn.Module):
         self.map3d_emb = Conv3dMap(map_shape, 2048, num_sem_categories, hidden_size)
         self.image_clip = ResNetCLIPEncoder(device=torch.device('cuda'))
         
-        # self.linear1 = nn.Linear()
         self.critic_linear = nn.Linear(4096, 1)
         self.orientation_emb = nn.Embedding(72, 2048)
         self.goal_emb = nn.Embedding(num_sem_categories, 2048)

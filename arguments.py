@@ -115,7 +115,7 @@ def get_args():
                         help='entropy term coefficient (default: 0.01)')
     parser.add_argument('--value_loss_coef', type=float, default=0.5,
                         help='value loss coefficient (default: 0.5)')
-    parser.add_argument('--max_grad_norm', type=float, default=0.5,
+    parser.add_argument('--max_grad_norm', type=float, default=0.1,
                         help='max norm of gradients (default: 0.5)')
     parser.add_argument('--num_global_steps', type=int, default=20,
                         help='number of forward steps in A2C (default: 5)')

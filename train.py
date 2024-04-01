@@ -288,7 +288,7 @@ def main():
 
     g_transformer.obs[:, 0].copy_(obs[:, :4, ...])
     g_transformer.maps[:, 0].copy_(global_input)
-    g_transformer.extras[:, 0].copy_(extras)
+    g_transformer.extras[:, 0].copy_(extras.to(device))
 
     # Run Global Policy (global_goals = Long-Term Goal)
     g_value, g_action, g_action_log_prob, _ = g_policy.act(
@@ -370,10 +370,7 @@ def main():
 
         # ------------------------------------------------------------------
         # Semantic Mapping Module
-        poses = torch.from_numpy(np.asarray(
-            [infos[env_idx]['sensor_pose'] for env_idx
-             in range(num_scenes)])
-        ).float().to(device)
+        poses = torch.from_numpy(np.asarray([infos[env_idx]['sensor_pose'] for env_idx in range(num_scenes)])).float().to(device)
 
         _, local_map, _, local_pose = sem_map_module(obs, poses, local_map, local_pose)
 
@@ -425,16 +422,12 @@ def main():
             global_input[:, 0:4, :, :] = local_map[:, 0:4, :, :]
             global_input[:, 4:8, :, :] = nn.MaxPool2d(args.global_downscaling)(full_map[:, 0:4, :, :])
             global_input[:, 8:, :, :] = local_map[:, 4:, :, :].detach()
-            goal_cat_id = torch.from_numpy(np.asarray(
-                [infos[env_idx]['goal_cat_id'] for env_idx
-                 in range(num_scenes)]))
+            goal_cat_id = torch.from_numpy(np.asarray([infos[env_idx]['goal_cat_id'] for env_idx in range(num_scenes)]))
             extras[:, 0] = global_orientation[:, 0]
             extras[:, 1] = goal_cat_id
 
             # Get exploration reward and metrics
-            g_reward = torch.from_numpy(np.asarray(
-                [infos[env_idx]['g_reward'] for env_idx in range(num_scenes)])
-            ).float().to(device)
+            g_reward = torch.from_numpy(np.asarray([infos[env_idx]['g_reward'] for env_idx in range(num_scenes)])).float().to(device)
             g_reward += args.intrinsic_rew_coeff * intrinsic_rews.detach()
 
             g_process_rewards += g_reward.cpu().numpy()
@@ -451,12 +444,12 @@ def main():
             if step == 0:
                 g_transformer.obs[0].copy_(obs[:, :4, ...])
                 g_transformer.maps[0].copy_(global_input)
-                g_transformer.extras[0].copy_(extras)
+                g_transformer.extras[0].copy_(extras.to(device))
             else:
                 g_transformer.insert(
                     obs[:, :4, ...], global_input,
-                    g_action, g_action_log_prob, g_value,
-                    g_reward, g_masks, extras
+                    g_action[:, 0, -1, ...], g_action_log_prob[:, 0, -1, ...], g_value,
+                    g_reward, g_masks, extras.to(device)
                 )
 
             # Sample long-term goal from global policy
@@ -469,9 +462,10 @@ def main():
                 deterministic=False
             )
             cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
+            print(cpu_actions)
             global_goals = [[int(action[0] * local_w),
                              int(action[1] * local_h)]
-                            for action in cpu_actions]
+                            for action in cpu_actions[:, 0, -1, ...]]
             global_goals = [[min(x, int(local_w - 1)),
                              min(y, int(local_h - 1))]
                             for x, y in global_goals]

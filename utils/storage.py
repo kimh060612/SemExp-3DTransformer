@@ -246,7 +246,7 @@ class TransformerStorage(object):
         k = torch.pow(gamma, _b)
         k[steps:] = torch.zeros(self.num_steps - steps + 1)
         ret = k.unsqueeze(0)
-        return ret
+        return ret.to(torch.device("cuda"))
     
     def to(self, device):
         self.obs = self.obs.to(device)
@@ -280,10 +280,12 @@ class TransformerStorage(object):
     def insert(self, obs, map, actions, action_log_probs, value_preds, rewards, masks):
         self.obs[:, self.step + 1].copy_(obs)
         self.maps[:, self.step + 1].copy_(map)
-        self.actions[:, self.step].copy_(actions.view(-1, self.n_actions))
-        self.action_log_probs[:, self.step].copy_(action_log_probs)
-        self.value_preds[:, self.step].copy_(value_preds)
-        self.rewards[:, self.step].copy_(rewards)
+        print(actions.shape)
+        print(action_log_probs.shape)
+        self.actions[self.step].copy_(actions.view(-1, self.n_actions))
+        self.action_log_probs[self.step].copy_(action_log_probs)
+        self.value_preds[self.step].copy_(value_preds[:, -1])
+        self.rewards[self.step].copy_(rewards)
         self.masks[:, self.step + 1].copy_(masks)
 
         self.step = (self.step + 1) % self.num_steps
@@ -302,8 +304,8 @@ class TransformerStorage(object):
             'maps': self.maps[:, :-1],
             'pos_emb': self.positional_embedding,
             'actions': self.actions.view(-1, self.n_actions),
-            'value_preds': self.value_preds[:, :-1].view(-1),
-            'returns': self.returns[:, :-1].view(-1),
+            'value_preds': self.value_preds[:-1].view(-1),
+            'returns': self.returns[:-1].view(-1),
             'masks': self.masks[:, :-1].view(-1),
             'old_action_log_probs': self.action_log_probs.view(-1),
             'adv_targ': advantages.view(-1),
@@ -318,7 +320,7 @@ class GlobalTransformerStorage(TransformerStorage):
         self.extras_size = extra_size
         
     def insert(self, obs, maps, actions, action_log_probs, value_preds, rewards, masks, extras):
-        self.extras[self.step + 1].copy_(extras)
+        self.extras[:, self.step + 1].copy_(extras)
         super(GlobalTransformerStorage, self).insert(obs, maps, actions, action_log_probs, value_preds, rewards, masks)
     
     
