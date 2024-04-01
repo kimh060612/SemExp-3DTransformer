@@ -462,7 +462,6 @@ def main():
                 deterministic=False
             )
             cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
-            print(cpu_actions)
             global_goals = [[int(action[0] * local_w),
                              int(action[1] * local_h)]
                             for action in cpu_actions[:, 0, -1, ...]]
@@ -519,11 +518,11 @@ def main():
                 and l_step == args.num_local_steps - 1:
             if not args.eval:
                 g_next_value = g_policy.get_value(
-                    g_transformer.obs[-1],
-                    g_transformer.maps[-1],
-                    g_transformer.masks[-1],
+                    g_transformer.obs[-1].unsqueeze(0),
+                    g_transformer.maps[-1].unsqueeze(0),
+                    g_transformer.masks[-1].unsqueeze(0),
                     g_transformer.positional_embedding,
-                    extras=g_transformer.extras[-1]
+                    extras=g_transformer.extras[-1].unsqueeze(0)
                 ).detach()
 
                 g_transformer.compute_returns(g_next_value, args.use_gae, args.gamma, args.tau)

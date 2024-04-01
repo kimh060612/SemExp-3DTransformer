@@ -46,23 +46,27 @@ class PPOTransformer():
         for _ in range(self.ppo_epoch):
 
             sample = storage.feed_forward_generator(advantages)
-
+            
             value_preds = sample['value_preds']
             returns = sample['returns']
             adv_targ = sample['adv_targ']
 
             # Reshape to do in a single forward pass for all steps
+            # inputs, maps, masks, pos_emb, action, extras=None
+            print("Eval Obs Shape: ", sample['obs'].shape)
+            print("Eval Map Shape: ", sample['maps'].shape)
+            print("Eval PosEmb Shape: ", sample['pos_emb'].shape)
+            print("Eval Extras Shape: ", sample['extras'].shape)
+            print("Eval Actions Shape: ", sample['actions'].shape)
             values, action_log_probs, dist_entropy, _ = self.actor_critic.evaluate_actions(
-                    sample['obs'], sample['rec_states'],
-                    sample['masks'], sample['actions'],
+                    sample['obs'], sample['maps'],
+                    sample['masks'], sample['pos_emb'], sample['actions'],
                     extras=sample['extras']
                 )
 
-            ratio = torch.exp(action_log_probs -
-                                sample['old_action_log_probs'])
+            ratio = torch.exp(action_log_probs - sample['old_action_log_probs'])
             surr1 = ratio * adv_targ
-            surr2 = torch.clamp(ratio, 1.0 - self.clip_param,
-                                1.0 + self.clip_param) * adv_targ
+            surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv_targ
             action_loss = -torch.min(surr1, surr2).mean()
 
             if self.use_clipped_value_loss:
@@ -78,17 +82,15 @@ class PPOTransformer():
                 value_loss = 0.5 * (returns - values).pow(2).mean()
 
             self.optimizer.zero_grad()
-            (value_loss * self.value_loss_coef + action_loss -
-                dist_entropy * self.entropy_coef).backward()
-            nn.utils.clip_grad_norm_(self.actor_critic.parameters(),
-                                        self.max_grad_norm)
+            (value_loss * self.value_loss_coef + action_loss - dist_entropy * self.entropy_coef).backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
 
             value_loss_epoch += value_loss.item()
             action_loss_epoch += action_loss.item()
             dist_entropy_epoch += dist_entropy.item()
 
-        num_updates = self.ppo_epoch * self.num_mini_batch
+        num_updates = self.ppo_epoch
 
         value_loss_epoch /= num_updates
         action_loss_epoch /= num_updates

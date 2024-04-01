@@ -264,24 +264,20 @@ class TransformerStorage(object):
         
     def compute_returns(self, next_value, use_gae, gamma, tau):
         if use_gae:
-            self.value_preds[:, -1] = next_value
+            self.value_preds[-1] = next_value[:, -1]
             gae = 0
             for step in reversed(range(self.rewards.size(0))):
-                delta = self.rewards[:, step] + gamma \
-                    * self.value_preds[:, step + 1] * self.masks[:, step + 1] \
-                    - self.value_preds[:, step]
-                gae = delta + gamma * tau * self.masks[:, step + 1] * gae
-                self.returns[:, step] = gae + self.value_preds[:, step]
+                delta = self.rewards[step] + gamma * self.value_preds[step + 1] * self.masks[step + 1] - self.value_preds[step]
+                gae = delta + gamma * tau * self.masks[step + 1] * gae
+                self.returns[step] = gae + self.value_preds[step]
         else:
-            self.returns[:, -1] = next_value
-            for step in reversed(range(self.rewards.size(1))):
-                self.returns[:, step] = self.returns[:, step + 1] * gamma * self.masks[:, step + 1] + self.rewards[:, step]
+            self.returns[-1] = next_value[:, -1]
+            for step in reversed(range(self.rewards.size(0))):
+                self.returns[step] = self.returns[step + 1] * gamma * self.masks[:, step + 1] + self.rewards[step]
     
     def insert(self, obs, map, actions, action_log_probs, value_preds, rewards, masks):
         self.obs[:, self.step + 1].copy_(obs)
         self.maps[:, self.step + 1].copy_(map)
-        print(actions.shape)
-        print(action_log_probs.shape)
         self.actions[self.step].copy_(actions.view(-1, self.n_actions))
         self.action_log_probs[self.step].copy_(action_log_probs)
         self.value_preds[self.step].copy_(value_preds[:, -1])
@@ -302,11 +298,11 @@ class TransformerStorage(object):
         return {
             'obs': self.obs[:, :-1],
             'maps': self.maps[:, :-1],
-            'pos_emb': self.positional_embedding,
+            'pos_emb': self.positional_embedding[:, :-1],
             'actions': self.actions.view(-1, self.n_actions),
             'value_preds': self.value_preds[:-1].view(-1),
             'returns': self.returns[:-1].view(-1),
-            'masks': self.masks[:, :-1].view(-1),
+            'masks': self.masks[:, :-1],
             'old_action_log_probs': self.action_log_probs.view(-1),
             'adv_targ': advantages.view(-1),
             'extras': self.extras[:, :-1].view(-1, self.extras_size) if self.has_extras else None,

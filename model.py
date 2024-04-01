@@ -150,6 +150,10 @@ class TransformerPolicy(nn.Module):
     def output_size(self):
         return 4096
     
+    def _check_nan(self, tensor, name):
+        if torch.isnan(tensor).any():
+            print(f"{name} explodes as NaN!")
+    
     def forward(self, x, x_map, masks, extras, pos_emb):
         
         num_process, num_steps = x.shape[:2]
@@ -158,11 +162,17 @@ class TransformerPolicy(nn.Module):
         orientation_emb = self.orientation_emb(extras[..., 0].view(-1, 1)).view(num_process, num_steps, -1)
         goal_emb = self.goal_emb(extras[..., 1].view(-1, 1)).view(num_process, num_steps, -1)
         
+        self._check_nan(img_emb, "Image CLIP")
         scene_emb = torch.cat([img_emb, map_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
         tgt_emb = torch.cat([orientation_emb, goal_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
         
         out, _ = self.transformer_net(scene_emb, tgt_emb, mask=masks, query_embed=pos_emb, pos_embed=pos_emb)
         _critic = self.critic_linear(out.permute(2, 0, 1).view(-1, 4096)).view(num_process, num_steps, -1)
+        self._check_nan(scene_emb, "Scene")
+        self._check_nan(_critic, "Critic")
+        self._check_nan(out, "Transformer")
+        self._check_nan(map_emb, "Map")
+        self._check_nan(tgt_emb, "Target")
         return _critic.squeeze(-1), scene_emb, map_emb
 
 class RL_Transformer_Policy(nn.Module):

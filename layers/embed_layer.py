@@ -14,8 +14,8 @@ class ResNetCLIPEncoder(nn.Module):
         self.depth = True
 
         if not self.is_blind:
-            model, preprocess = clip.load("RN50", device=device)
-
+            model, preprocess = clip.load("RN50", device=device, jit=False)
+            model = model.float()
             # expected input: C x H x W (np.uint8 in [0-255])
             self.preprocess = T.Compose([
                 # resize and center crop to 224
