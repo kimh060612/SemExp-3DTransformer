@@ -121,6 +121,7 @@ class VectorEnv:
         assert multiprocessing_start_method in self._valid_start_methods, (
             "multiprocessing_start_method must be one of {}. Got '{}'"
         ).format(self._valid_start_methods, multiprocessing_start_method)
+        mp.set_start_method(multiprocessing_start_method, force=True)
         self._auto_reset_done = auto_reset_done
         self._mp_ctx = mp.get_context(multiprocessing_start_method)
         self._workers = []
