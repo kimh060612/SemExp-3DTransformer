@@ -1,5 +1,9 @@
 FROM fairembodied/habitat-challenge:testing_2020_habitat_base_docker
 
+
+RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys A4B469963BF863CC
+RUN apt-get update
+RUN apt-get install -y libglvnd-dev libnvidia-gl-450 libgl1-mesa-dev libegl1-mesa-dev libglm-dev libjpeg-dev libpng-dev libglfw3-dev build-essential cmake
 SHELL [ "/bin/bash", "-c" ]
 RUN echo "source activate habitat" > ~/.bashrc
 RUN echo "alias ll='ls -alh'" >> ~/.bashrc

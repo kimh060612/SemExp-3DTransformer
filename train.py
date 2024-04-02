@@ -15,6 +15,8 @@ from arguments import get_args
 import algo
 
 os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["CUDA_VISLBE_DEVICES"] = "0"
+
 
 def main():
     args = get_args()
@@ -232,7 +234,7 @@ def main():
                        args.num_mini_batch, args.value_loss_coef,
                        args.entropy_coef, lr=args.lr, eps=args.eps,
                        max_grad_norm=args.max_grad_norm)
-
+    
     global_input = torch.zeros(num_scenes, ngc, local_w, local_h)
     global_orientation = torch.zeros(num_scenes, 1).long()
     intrinsic_rews = torch.zeros(num_scenes).to(device)
