@@ -294,7 +294,7 @@ class TransformerStorage(object):
         if self.has_extras:
             self.extras[:, 0].copy_(self.extras[-1])
     
-    def feed_forward_generator(self, advantages):
+    def feed_forward_generator(self, advantages):        
         return {
             'obs': self.obs[:, :-1],
             'maps': self.maps[:, :-1],
@@ -307,6 +307,22 @@ class TransformerStorage(object):
             'adv_targ': advantages.view(-1),
             'extras': self.extras[:, :-1].view(-1, self.extras_size) if self.has_extras else None,
         }
+
+    def memory_batch_generator(self, advantages, seq_len):
+        for idx in range(seq_len, self.num_steps - 1):
+            s, e = idx - seq_len, idx
+            yield {
+                'obs': self.obs[:, s:e],
+                'maps': self.maps[:, s:e],
+                'pos_emb': self.positional_embedding[:, s:e],
+                'actions': self.actions[s:e].view(-1, self.n_actions),
+                'value_preds': self.value_preds[s:e].view(-1),
+                'returns': self.returns[s:e].view(-1),
+                'masks': self.masks[:, s:e],
+                'old_action_log_probs': self.action_log_probs[s:e].view(-1),
+                'adv_targ': advantages[s:e].view(-1),
+                'extras': self.extras[:, s:e].view(-1, self.extras_size) if self.has_extras else None,
+            }
 
 class GlobalTransformerStorage(TransformerStorage):
     def __init__(self, num_steps, num_processes, obs_shape, map_shape, action_space, extra_size):
