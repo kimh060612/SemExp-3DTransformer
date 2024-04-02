@@ -276,23 +276,23 @@ class TransformerStorage(object):
                 self.returns[step] = self.returns[step + 1] * gamma * self.masks[:, step + 1] + self.rewards[step]
     
     def insert(self, obs, map, actions, action_log_probs, value_preds, rewards, masks):
-        self.obs[:, self.step + 1].copy_(obs)
-        self.maps[:, self.step + 1].copy_(map)
-        self.actions[self.step].copy_(actions.view(-1, self.n_actions))
-        self.action_log_probs[self.step].copy_(action_log_probs)
-        self.value_preds[self.step].copy_(value_preds[:, -1])
-        self.rewards[self.step].copy_(rewards)
-        self.masks[:, self.step + 1].copy_(masks)
+        self.obs[:, self.step + 1] = obs.clone()
+        self.maps[:, self.step + 1] = map.clone()
+        self.actions[self.step] = actions.view(-1, self.n_actions).clone()
+        self.action_log_probs[self.step] = action_log_probs.clone()
+        self.value_preds[self.step] = value_preds[:, -1].clone()
+        self.rewards[self.step] = rewards.clone()
+        self.masks[:, self.step + 1] = masks.clone()
 
         self.step = (self.step + 1) % self.num_steps
         self.positional_embedding = self._build_pos_embedding(self.gamma, self.step)
     
     def after_update(self):
-        self.obs[:, 0].copy_(self.obs[-1])
-        self.maps[:, 0].copy_(self.maps[-1])
-        self.masks[:, 0].copy_(self.masks[-1])
+        self.obs[:, 0] = self.obs[:, -1].clone()
+        self.maps[:, 0] = self.maps[:, -1].clone()
+        self.masks[:, 0] = self.masks[:, -1].clone()
         if self.has_extras:
-            self.extras[:, 0].copy_(self.extras[-1])
+            self.extras[:, 0] = self.extras[:, -1].clone()
     
     def feed_forward_generator(self, advantages):        
         return {
@@ -332,7 +332,7 @@ class GlobalTransformerStorage(TransformerStorage):
         self.extras_size = extra_size
         
     def insert(self, obs, maps, actions, action_log_probs, value_preds, rewards, masks, extras):
-        self.extras[:, self.step + 1].copy_(extras)
+        self.extras[:, self.step + 1] = extras.clone()
         super(GlobalTransformerStorage, self).insert(obs, maps, actions, action_log_probs, value_preds, rewards, masks)
     
     

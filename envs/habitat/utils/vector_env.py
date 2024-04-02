@@ -166,6 +166,8 @@ class VectorEnv:
         r"""process worker for creating and interacting with the environment.
         """
         env = env_fn(*env_fn_args)
+        import os
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         if parent_pipe is not None:
             parent_pipe.close()
         try:

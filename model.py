@@ -138,7 +138,7 @@ class TransformerPolicy(nn.Module):
     def __init__(self, map_shape, hidden_size=512, num_sem_categories=16):
         super(TransformerPolicy, self).__init__()
         
-        self.transformer_net = Transformer(d_model=4096, num_decoder_layers=3, num_encoder_layers=3)
+        self.transformer_net = Transformer(d_model=4096, num_decoder_layers=1, num_encoder_layers=1)
         self.map3d_emb = Conv3dMap(map_shape, 2048, num_sem_categories, hidden_size)
         self.image_clip = ResNetCLIPEncoder(device=torch.device('cuda'))
         
