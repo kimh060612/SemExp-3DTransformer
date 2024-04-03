@@ -55,7 +55,7 @@ class PPOTransformer():
                 # inputs, maps, masks, pos_emb, action, extras=None
                 values, action_log_probs, dist_entropy, _ = self.actor_critic.evaluate_actions(
                     seq_batch['obs'], seq_batch['maps'],
-                    seq_batch['masks'], seq_batch['pos_emb'], seq_batch['actions'],
+                    seq_batch['masks'], seq_batch['attn_mask'], seq_batch['pos_emb'], seq_batch['actions'],
                     extras=seq_batch['extras']
                 )
 

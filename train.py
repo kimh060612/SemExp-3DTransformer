@@ -48,7 +48,7 @@ def main():
     num_episodes = int(args.num_eval_episodes)
     device = args.device = torch.device("cuda:0" if args.cuda else "cpu")
 
-    g_masks = torch.ones(num_scenes).bool().to(device)
+    g_masks = torch.zeros(num_scenes).bool().to(device)
 
     best_g_reward = -np.inf
 
@@ -290,6 +290,7 @@ def main():
 
     g_transformer.obs[:, 0].copy_(obs[:, :4, ...])
     g_transformer.maps[:, 0].copy_(global_input)
+    g_transformer.masks[:, 0].copy_(g_masks[0])
     g_transformer.extras[:, 0].copy_(extras.to(device))
 
     # Run Global Policy (global_goals = Long-Term Goal)
@@ -297,6 +298,7 @@ def main():
         g_transformer.obs,
         g_transformer.maps,
         g_transformer.masks,
+        g_transformer.attn_masks,
         g_transformer.positional_embedding,
         extras=g_transformer.extras,
         deterministic=False
@@ -328,7 +330,6 @@ def main():
                                                 ].argmax(0).cpu().numpy()
 
     obs, _, done, infos = envs.plan_act_and_preprocess(planner_inputs)
-
     start = time.time()
     g_reward = 0
 
@@ -345,7 +346,7 @@ def main():
 
         # ------------------------------------------------------------------
         # Reinitialize variables when episode ends
-        l_masks = torch.BoolTensor([ False if x else True for x in done ]).to(device)
+        l_masks = torch.BoolTensor([ True if x else False for x in done ]).to(device)
         g_masks *= l_masks
         
         for e, x in enumerate(done):
@@ -459,6 +460,7 @@ def main():
                 g_transformer.obs,
                 g_transformer.maps,
                 g_transformer.masks,
+                g_transformer.attn_masks,
                 g_transformer.positional_embedding,
                 extras=g_transformer.extras,
                 deterministic=False
@@ -472,7 +474,7 @@ def main():
                             for x, y in global_goals]
 
             g_reward = 0
-            g_masks = torch.ones(num_scenes).bool().to(device)
+            g_masks = torch.zeros(num_scenes).bool().to(device)
 
         # ------------------------------------------------------------------
 
@@ -516,15 +518,15 @@ def main():
         # ------------------------------------------------------------------
         # Training
         torch.set_grad_enabled(True)
-        if g_step % args.num_global_steps == args.num_global_steps - 1 \
-                and l_step == args.num_local_steps - 1:
+        if g_step % args.num_global_steps == args.num_global_steps - 1 and l_step == args.num_local_steps - 1:
             if not args.eval:
                 g_next_value = g_policy.get_value(
-                    g_transformer.obs[-1].unsqueeze(0),
-                    g_transformer.maps[-1].unsqueeze(0),
-                    g_transformer.masks[-1].unsqueeze(0),
-                    g_transformer.positional_embedding,
-                    extras=g_transformer.extras[-1].unsqueeze(0)
+                    g_transformer.obs[:, :-1],
+                    g_transformer.maps[:, :-1],
+                    g_transformer.masks[:, :-1],
+                    g_transformer.attn_masks[:-1, :-1],
+                    g_transformer.positional_embedding[:, :-1],
+                    extras=g_transformer.extras[:, :-1]
                 ).detach()
 
                 g_transformer.compute_returns(g_next_value, args.use_gae, args.gamma, args.tau)

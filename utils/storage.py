@@ -214,6 +214,7 @@ class TransformerStorage(object):
         self.num_processes = num_processes
         self.num_steps = num_steps
         self.step = 0 ## Step Index
+        self.loops = 0
         ### step > num_steps : shift overall variables
         self.has_extras = False
         self.extras_size = None
@@ -224,6 +225,8 @@ class TransformerStorage(object):
         self.maps = torch.zeros(num_processes, num_steps + 1, *map_shape)
         ## Reccurent State: Image Embedding (+) 3D Embedding (+) Action State (+) Pose State
         ## Mask for Transformer
+        self.attn_masks = torch.ones(num_steps + 1, num_steps + 1).bool()
+        self.attn_masks = torch.triu(self.attn_masks, diagonal=1)
         self.masks = torch.ones(num_processes, num_steps + 1).bool()
         self.positional_embedding = self._build_pos_embedding(gamma, 1)
         ## Reward & Value function & Returns for PPO  
@@ -257,6 +260,7 @@ class TransformerStorage(object):
         self.action_log_probs = self.action_log_probs.to(device)
         self.actions = self.actions.to(device)
         self.masks = self.masks.to(device)
+        self.attn_masks = self.attn_masks.to(device)
         self.positional_embedding = self.positional_embedding.to(device)
         if self.has_extras:
             self.extras = self.extras.to(device)
@@ -284,29 +288,24 @@ class TransformerStorage(object):
         self.rewards[self.step] = rewards.clone()
         self.masks[:, self.step + 1] = masks.clone()
 
+        if not self.loops == 0:
+            self.attn_masks = torch.cat([self.attn_masks[:, -1:], self.attn_masks[:, :-1]], dim=-1).cuda()
+            self.positional_embedding = torch.cat([self.positional_embedding[..., -1:], self.positional_embedding[..., :-1]], dim=-1).cuda()
+        else:
+            self.positional_embedding = self._build_pos_embedding(self.gamma, self.step)
+                
+        if self.step + 1 >= self.num_steps:
+            self.loops += 1
         self.step = (self.step + 1) % self.num_steps
-        self.positional_embedding = self._build_pos_embedding(self.gamma, self.step)
-    
+        
     def after_update(self):
         self.obs[:, 0] = self.obs[:, -1].clone()
         self.maps[:, 0] = self.maps[:, -1].clone()
         self.masks[:, 0] = self.masks[:, -1].clone()
+        self.attn_masks = torch.cat([self.attn_masks[:, -1:], self.attn_masks[:, :-1]], dim=-1).cuda()
+        self.positional_embedding = torch.cat([self.positional_embedding[..., -1:], self.positional_embedding[..., :-1]], dim=-1).cuda()
         if self.has_extras:
             self.extras[:, 0] = self.extras[:, -1].clone()
-    
-    def feed_forward_generator(self, advantages):        
-        return {
-            'obs': self.obs[:, :-1],
-            'maps': self.maps[:, :-1],
-            'pos_emb': self.positional_embedding[:, :-1],
-            'actions': self.actions.view(-1, self.n_actions),
-            'value_preds': self.value_preds[:-1].view(-1),
-            'returns': self.returns[:-1].view(-1),
-            'masks': self.masks[:, :-1],
-            'old_action_log_probs': self.action_log_probs.view(-1),
-            'adv_targ': advantages.view(-1),
-            'extras': self.extras[:, :-1].view(-1, self.extras_size) if self.has_extras else None,
-        }
 
     def memory_batch_generator(self, advantages, seq_len):
         for idx in range(seq_len, self.num_steps - 1):
@@ -319,6 +318,7 @@ class TransformerStorage(object):
                 'value_preds': self.value_preds[s:e].view(-1),
                 'returns': self.returns[s:e].view(-1),
                 'masks': self.masks[:, s:e],
+                'attn_mask': self.attn_masks[s:e, s:e],
                 'old_action_log_probs': self.action_log_probs[s:e].view(-1),
                 'adv_targ': advantages[s:e].view(-1),
                 'extras': self.extras[:, s:e].view(-1, self.extras_size) if self.has_extras else None,

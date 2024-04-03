@@ -153,8 +153,10 @@ class TransformerPolicy(nn.Module):
     def _check_nan(self, tensor, name):
         if torch.isnan(tensor).any():
             print(f"{name} explodes as NaN!")
+            return True
+        return False
     
-    def forward(self, x, x_map, masks, extras, pos_emb):
+    def forward(self, x, x_map, masks, attn_mask, extras, pos_emb):
         
         num_process, num_steps = x.shape[:2]
         img_emb = self.image_clip(x.view(-1, *x.shape[2:])).view(num_process, num_steps, -1)
@@ -166,13 +168,22 @@ class TransformerPolicy(nn.Module):
         scene_emb = torch.cat([img_emb, map_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
         tgt_emb = torch.cat([orientation_emb, goal_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
         
-        out, _ = self.transformer_net(scene_emb, tgt_emb, mask=masks, query_embed=pos_emb, pos_embed=pos_emb)
+        out, _ = self.transformer_net(scene_emb, tgt_emb, mask=masks, attn_mask=attn_mask, query_embed=pos_emb, pos_embed=pos_emb)
         _critic = self.critic_linear(out.permute(2, 0, 1).view(-1, 4096)).view(num_process, num_steps, -1)
-        self._check_nan(scene_emb, "Scene")
-        self._check_nan(_critic, "Critic")
-        self._check_nan(out, "Transformer")
-        self._check_nan(map_emb, "Map")
-        self._check_nan(tgt_emb, "Target")
+        isna = self._check_nan(scene_emb, "Scene")
+        isna = isna or self._check_nan(_critic, "Critic")
+        isna = isna or self._check_nan(out, "Transformer")
+        if isna :
+            self._check_nan(img_emb, "Image Embedding")
+            self._check_nan(map_emb, "Map Embedding")
+        #     print("Mask: ", masks)
+        #     print("Pos Emb: ", pos_emb)
+        isna = self._check_nan(map_emb, "Map")
+        # if isna:
+        #     print(x_map)
+        isna = self._check_nan(tgt_emb, "Target")
+        # if isna:
+        #     print(extras)
         return _critic.squeeze(-1), scene_emb, map_emb
 
 class RL_Transformer_Policy(nn.Module):
@@ -197,12 +208,12 @@ class RL_Transformer_Policy(nn.Module):
 
         self.model_type = model_type
 
-    def forward(self, inputs, maps, masks, extras, pos_emb):
-        return self.network(inputs, maps, masks, extras, pos_emb)
+    def forward(self, inputs, maps, masks, attn_mask, extras, pos_emb):
+        return self.network(inputs, maps, masks, attn_mask, extras, pos_emb)
 
-    def act(self, inputs, maps, masks, pos_emb, extras=None, deterministic=False):
+    def act(self, inputs, maps, masks, attn_mask, pos_emb, extras=None, deterministic=False):
 
-        value, actor_features, map_emb = self(inputs, maps, masks, extras, pos_emb)
+        value, actor_features, map_emb = self(inputs, maps, masks, attn_mask, extras, pos_emb)
         dist = self.dist(actor_features)
         
         if deterministic:
@@ -213,13 +224,13 @@ class RL_Transformer_Policy(nn.Module):
 
         return value, action, action_log_probs, map_emb
 
-    def get_value(self, inputs, maps, masks, pos_emb, extras=None):
-        value, _, _ = self(inputs, maps, masks, extras, pos_emb)
+    def get_value(self, inputs, maps, masks, attn_mask, pos_emb, extras=None):
+        value, _, _ = self(inputs, maps, masks, attn_mask, extras, pos_emb)
         return value
 
-    def evaluate_actions(self, inputs, maps, masks, pos_emb, action, extras=None):
+    def evaluate_actions(self, inputs, maps, masks, attn_mask, pos_emb, action, extras=None):
 
-        value, actor_features, map_emb = self(inputs, maps, masks, extras, pos_emb)
+        value, actor_features, map_emb = self(inputs, maps, masks, attn_mask, extras, pos_emb)
         dist = self.dist(actor_features)
 
         action_log_probs = dist.log_probs(action)

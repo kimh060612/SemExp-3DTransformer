@@ -34,7 +34,7 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, tgt, mask, query_embed, pos_embed):
+    def forward(self, src, tgt, mask, attn_mask, query_embed, pos_embed):
         '''
         Args:
             src: the sequence to the encoder (required).
@@ -50,8 +50,8 @@ class Transformer(nn.Module):
         pos_embed = pos_embed.unsqueeze(-1).permute(1, 0, 2)
         query_embed = query_embed.unsqueeze(-1).permute(1, 0, 2)
         
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
-        hs = self.decoder(tgt, memory, memory_key_padding_mask=mask, pos=pos_embed, query_pos=query_embed)
+        memory = self.encoder(src, mask=attn_mask, src_key_padding_mask=mask, pos=pos_embed)
+        hs = self.decoder(tgt, memory, tgt_mask=attn_mask, memory_mask=attn_mask, memory_key_padding_mask=mask, pos=pos_embed, query_pos=query_embed)
         return hs.transpose(1, 2), memory.permute(1, 2, 0)
 
 class TransformerEncoder(nn.Module):
@@ -148,6 +148,9 @@ class TransformerEncoderLayer(nn.Module):
                      pos: Optional[Tensor] = None):
         q = k = self.with_pos_embed(src, pos)
         src2 = self.self_attn(query=q, key=k, value=src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)[0]
+        if torch.isnan(src2).any():
+            print("Encoder NaN occurs!")
+            print(src2)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
@@ -163,6 +166,8 @@ class TransformerEncoderLayer(nn.Module):
         q = k = self.with_pos_embed(src2, pos)
         src2 = self.self_attn(q, k, value=src2, attn_mask=src_mask,
                               key_padding_mask=src_key_padding_mask)[0]
+        if torch.isnan(src2).any():
+            print("Encoder NaN occurs!")
         src = src + self.dropout1(src2)
         src2 = self.norm2(src)
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src2))))
@@ -213,6 +218,8 @@ class TransformerDecoderLayer(nn.Module):
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(q, k, value=tgt, attn_mask=tgt_mask,
                               key_padding_mask=tgt_key_padding_mask)[0]
+        if torch.isnan(tgt2).any():
+            print("Decoder NaN occurs!")
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
         tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos),
@@ -237,6 +244,8 @@ class TransformerDecoderLayer(nn.Module):
         q = k = self.with_pos_embed(tgt2, query_pos)
         tgt2 = self.self_attn(q, k, value=tgt2, attn_mask=tgt_mask,
                               key_padding_mask=tgt_key_padding_mask)[0]
+        if torch.isnan(tgt2).any():
+            print("Decoder NaN occurs!")
         tgt = tgt + self.dropout1(tgt2)
         tgt2 = self.norm2(tgt)
         tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt2, query_pos),
