@@ -17,7 +17,6 @@ import algo
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["CUDA_VISLBE_DEVICES"] = "0"
 
-
 def main():
     args = get_args()
 
