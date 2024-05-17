@@ -138,17 +138,20 @@ class TransformerPolicy(nn.Module):
     def __init__(self, map_shape, hidden_size=512, num_sem_categories=16):
         super(TransformerPolicy, self).__init__()
         
-        self.transformer_net = Transformer(d_model=4096, num_decoder_layers=1, num_encoder_layers=1)
-        self.map3d_emb = Conv3dMap(map_shape, 2048, num_sem_categories, hidden_size)
+        self.transformer_net = Transformer(d_model=512, num_decoder_layers=2, num_encoder_layers=2)
+        self.map3d_emb = Conv3dMap(map_shape, 256, num_sem_categories, hidden_size)
         self.image_clip = ResNetCLIPEncoder(device=torch.device('cuda'))
         
-        self.critic_linear = nn.Linear(4096, 1)
-        self.orientation_emb = nn.Embedding(72, 2048)
-        self.goal_emb = nn.Embedding(num_sem_categories, 2048)
+        self.img_emb_linear1 = nn.Linear(2048, 1024)
+        self.img_emb_linear2 = nn.Linear(1024, 256)
+        
+        self.critic_linear = nn.Linear(512, 1)
+        self.orientation_emb = nn.Embedding(72, 256)
+        self.goal_emb = nn.Embedding(num_sem_categories, 256)
     
     @property
     def output_size(self):
-        return 4096
+        return 512
     
     def _check_nan(self, tensor, name):
         if torch.isnan(tensor).any():
@@ -159,17 +162,19 @@ class TransformerPolicy(nn.Module):
     def forward(self, x, x_map, masks, attn_mask, extras, pos_emb):
         
         num_process, num_steps = x.shape[:2]
-        img_emb = self.image_clip(x.view(-1, *x.shape[2:])).view(num_process, num_steps, -1)
-        map_emb = self.map3d_emb(x_map.view(-1, *x_map.shape[2:])).view(num_process, num_steps, -1)
-        orientation_emb = self.orientation_emb(extras[..., 0].view(-1, 1)).view(num_process, num_steps, -1)
-        goal_emb = self.goal_emb(extras[..., 1].view(-1, 1)).view(num_process, num_steps, -1)
+        img_emb = self.image_clip(x.contiguous().view(-1, *x.shape[2:])).view(num_process, num_steps, -1)
+        img_emb = self.img_emb_linear1(img_emb)
+        img_emb = self.img_emb_linear2(img_emb)
+        map_emb = self.map3d_emb(x_map.contiguous().view(-1, *x_map.shape[2:])).view(num_process, num_steps, -1)
+        orientation_emb = self.orientation_emb(extras[..., 0].contiguous().view(-1, 1)).view(num_process, num_steps, -1)
+        goal_emb = self.goal_emb(extras[..., 1].contiguous().view(-1, 1)).view(num_process, num_steps, -1)
         
         self._check_nan(img_emb, "Image CLIP")
         scene_emb = torch.cat([img_emb, map_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
         tgt_emb = torch.cat([orientation_emb, goal_emb], dim=-1) ## BATCH * SEQ_LEN * EMB_VEC_LEN
         
         out, _ = self.transformer_net(scene_emb, tgt_emb, mask=masks, attn_mask=attn_mask, query_embed=pos_emb, pos_embed=pos_emb)
-        _critic = self.critic_linear(out.permute(2, 0, 1).view(-1, 4096)).view(num_process, num_steps, -1)
+        _critic = self.critic_linear(out.permute(2, 0, 1).contiguous().view(-1, self.output_size)).view(num_process, num_steps, -1)
         isna = self._check_nan(scene_emb, "Scene")
         isna = isna or self._check_nan(_critic, "Critic")
         isna = isna or self._check_nan(out, "Transformer")
@@ -211,10 +216,11 @@ class RL_Transformer_Policy(nn.Module):
     def forward(self, inputs, maps, masks, attn_mask, extras, pos_emb):
         return self.network(inputs, maps, masks, attn_mask, extras, pos_emb)
 
-    def act(self, inputs, maps, masks, attn_mask, pos_emb, extras=None, deterministic=False):
+    def act(self, inputs, maps, timestep, masks, attn_mask, pos_emb, extras=None, deterministic=False):
 
         value, actor_features, map_emb = self(inputs, maps, masks, attn_mask, extras, pos_emb)
-        dist = self.dist(actor_features)
+        # num_process, num_step = actor_features.shape[:2]
+        dist = self.dist(actor_features[:, timestep, :])
         
         if deterministic:
             action = dist.mode()
@@ -229,10 +235,8 @@ class RL_Transformer_Policy(nn.Module):
         return value
 
     def evaluate_actions(self, inputs, maps, masks, attn_mask, pos_emb, action, extras=None):
-
         value, actor_features, map_emb = self(inputs, maps, masks, attn_mask, extras, pos_emb)
         dist = self.dist(actor_features)
-
         action_log_probs = dist.log_probs(action)
         dist_entropy = dist.entropy().mean()
 
@@ -305,11 +309,9 @@ class Semantic_Mapping(nn.Module):
         vision_range = self.vision_range
         XYZ_cm_std = agent_view_centered_t.float()
         XYZ_cm_std[..., :2] = (XYZ_cm_std[..., :2] / xy_resolution)
-        XYZ_cm_std[..., :2] = (XYZ_cm_std[..., :2] -
-                               vision_range // 2.) / vision_range * 2.
+        XYZ_cm_std[..., :2] = (XYZ_cm_std[..., :2] - vision_range // 2.) / vision_range * 2.
         XYZ_cm_std[..., 2] = XYZ_cm_std[..., 2] / z_resolution
-        XYZ_cm_std[..., 2] = (XYZ_cm_std[..., 2] -
-                              (max_h + min_h) // 2.) / (max_h - min_h) * 2.
+        XYZ_cm_std[..., 2] = (XYZ_cm_std[..., 2] - (max_h + min_h) // 2.) / (max_h - min_h) * 2.
         self.feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(
             obs[:, 4:, :, :]
         ).view(bs, c - 4, h // self.du_scale * w // self.du_scale)
@@ -391,3 +393,176 @@ class Semantic_Mapping(nn.Module):
         map_pred, _ = torch.max(maps2, 1)
 
         return fp_map_pred, map_pred, pose_pred, current_poses
+
+
+class Semantic_Mapping_BA(nn.Module):
+    def __init__(self, args):
+        super(Semantic_Mapping_BA, self).__init__()
+
+        self.device = args.device
+        self.screen_h = args.frame_height
+        self.screen_w = args.frame_width
+        self.resolution = args.map_resolution
+        self.z_resolution = args.map_resolution
+        self.map_size_cm = args.map_size_cm // args.global_downscaling
+        self.n_channels = 3
+        self.vision_range = args.vision_range
+        self.dropout = 0.5
+        self.fov = args.hfov
+        self.vfov = args.vfov
+        self.du_scale = args.du_scale
+        self.cat_pred_threshold = args.cat_pred_threshold
+        self.exp_pred_threshold = args.exp_pred_threshold
+        self.map_pred_threshold = args.map_pred_threshold
+        self.num_sem_categories = args.num_sem_categories
+
+        self.max_height = int(360 / self.z_resolution)
+        self.min_height = int(-40 / self.z_resolution)
+        self.agent_height = args.camera_height * 100.
+        self.shift_loc = [self.vision_range *
+                          self.resolution // 2, 0, np.pi / 2.0]
+        self.camera_matrix = du.get_camera_matrix(self.screen_w, self.screen_h, self.fov)
+        self.full_camera_matrix = du.get_full_camera_matrix(self.screen_w, self.screen_h, self.fov, self.vfov)
+        self.pool = ChannelPool(1)
+        vr = self.vision_range
+
+        self.init_grid = torch.zeros(
+            args.num_processes, 1 + self.num_sem_categories, vr, vr,
+            self.max_height - self.min_height
+        ).float().to(self.device)
+        self.feat = torch.ones(
+            args.num_processes, 1 + self.num_sem_categories,
+            self.screen_h // self.du_scale * self.screen_w // self.du_scale
+        ).float().to(self.device)
+
+    def _get_new_pose_batch(self, pose, rel_pose_change):
+        deg2pi = 180 / np.pi
+        pose[:, 1] += rel_pose_change[:, 0] * \
+            torch.sin(pose[:, 2] / deg2pi) \
+            + rel_pose_change[:, 1] * \
+            torch.cos(pose[:, 2] / deg2pi)
+        pose[:, 0] += rel_pose_change[:, 0] * \
+            torch.cos(pose[:, 2] / deg2pi) \
+            - rel_pose_change[:, 1] * \
+            torch.sin(pose[:, 2] / deg2pi)
+        pose[:, 2] += rel_pose_change[:, 2] * deg2pi
+
+        pose[:, 2] = torch.fmod(pose[:, 2] - 180.0, 360.0) + 180.0
+        pose[:, 2] = torch.fmod(pose[:, 2] + 180.0, 360.0) - 180.0
+
+        return pose
+
+    def forward_ba(self, obs_seq: torch.Tensor, pose_seq: torch.Tensor):
+        bs, ns, c, h, w = obs_seq.shape
+        rgbd_seq = obs_seq[:, :, :4, ...] # bs * num_seq * channel * c * h * w
+        seg_seq = obs_seq[:, :, 4:, ...]
+        
+        pc_ba_now = du.get_point_cloud_ba(rgbd_seq, pose_seq, seg_seq, self.full_camera_matrix) # Need to implement
+        
+        
+        
+    ## 10개 step에 대하여 BA를 수행
+    def forward(self, obs, pose_obs, maps_last, poses_last):
+        bs, c, h, w = obs.size()
+        depth = obs[:, 3, :, :]
+
+        point_cloud_t = du.get_point_cloud_from_z_t(depth, self.camera_matrix, self.device, scale=self.du_scale)
+        print(self.camera_matrix.__dict__)
+        print(point_cloud_t.shape)
+        agent_view_t = du.transform_camera_view_t(point_cloud_t, self.agent_height, 0, self.device)
+        print(agent_view_t.shape)
+        agent_view_centered_t = du.transform_pose_t(agent_view_t, self.shift_loc, self.device)
+        print(agent_view_centered_t.shape)
+
+        max_h = self.max_height
+        min_h = self.min_height
+        xy_resolution = self.resolution
+        z_resolution = self.z_resolution
+        vision_range = self.vision_range
+        XYZ_cm_std = agent_view_centered_t.float()
+        XYZ_cm_std[..., :2] = (XYZ_cm_std[..., :2] / xy_resolution)
+        XYZ_cm_std[..., :2] = (XYZ_cm_std[..., :2] - vision_range // 2.) / vision_range * 2.
+        XYZ_cm_std[..., 2] = XYZ_cm_std[..., 2] / z_resolution
+        XYZ_cm_std[..., 2] = (XYZ_cm_std[..., 2] - (max_h + min_h) // 2.) / (max_h - min_h) * 2.
+        self.feat[:, 1:, :] = nn.AvgPool2d(self.du_scale)(
+            obs[:, 4:, :, :]
+        ).view(bs, c - 4, h // self.du_scale * w // self.du_scale)
+
+        XYZ_cm_std = XYZ_cm_std.permute(0, 3, 1, 2)
+        XYZ_cm_std = XYZ_cm_std.view(XYZ_cm_std.shape[0],
+                                     XYZ_cm_std.shape[1],
+                                     XYZ_cm_std.shape[2] * XYZ_cm_std.shape[3])
+
+        voxels = du.splat_feat_nd(self.init_grid * 0., self.feat, XYZ_cm_std).transpose(2, 3)
+        print(voxels.shape)
+        
+        min_z = int(25 / z_resolution - min_h)
+        max_z = int((self.agent_height + 1) / z_resolution - min_h)
+
+        agent_height_proj = voxels[..., min_z:max_z].sum(4)
+        all_height_proj = voxels.sum(4)
+        print(all_height_proj.shape)
+
+        fp_map_pred = agent_height_proj[:, 0:1, :, :]
+        fp_exp_pred = all_height_proj[:, 0:1, :, :]
+        fp_map_pred = fp_map_pred / self.map_pred_threshold
+        fp_exp_pred = fp_exp_pred / self.exp_pred_threshold
+        fp_map_pred = torch.clamp(fp_map_pred, min=0.0, max=1.0)
+        fp_exp_pred = torch.clamp(fp_exp_pred, min=0.0, max=1.0)
+
+        pose_pred = poses_last
+
+        agent_view = torch.zeros(bs, c,
+                                 self.map_size_cm // self.resolution,
+                                 self.map_size_cm // self.resolution
+                                 ).to(self.device)
+
+        x1 = self.map_size_cm // (self.resolution * 2) - self.vision_range // 2
+        x2 = x1 + self.vision_range
+        y1 = self.map_size_cm // (self.resolution * 2)
+        y2 = y1 + self.vision_range
+        agent_view[:, 0:1, y1:y2, x1:x2] = fp_map_pred
+        agent_view[:, 1:2, y1:y2, x1:x2] = fp_exp_pred
+        agent_view[:, 4:, y1:y2, x1:x2] = torch.clamp(
+            agent_height_proj[:, 1:, :, :] / self.cat_pred_threshold,
+            min=0.0, max=1.0)
+
+        corrected_pose = pose_obs
+
+        def get_new_pose_batch(pose, rel_pose_change):
+
+            pose[:, 1] += rel_pose_change[:, 0] * \
+                torch.sin(pose[:, 2] / 57.29577951308232) \
+                + rel_pose_change[:, 1] * \
+                torch.cos(pose[:, 2] / 57.29577951308232)
+            pose[:, 0] += rel_pose_change[:, 0] * \
+                torch.cos(pose[:, 2] / 57.29577951308232) \
+                - rel_pose_change[:, 1] * \
+                torch.sin(pose[:, 2] / 57.29577951308232)
+            pose[:, 2] += rel_pose_change[:, 2] * 57.29577951308232
+
+            pose[:, 2] = torch.fmod(pose[:, 2] - 180.0, 360.0) + 180.0
+            pose[:, 2] = torch.fmod(pose[:, 2] + 180.0, 360.0) - 180.0
+
+            return pose
+
+        current_poses = get_new_pose_batch(poses_last, corrected_pose)
+        st_pose = current_poses.clone().detach()
+
+        st_pose[:, :2] = - (st_pose[:, :2]
+                            * 100.0 / self.resolution
+                            - self.map_size_cm // (self.resolution * 2)) /\
+            (self.map_size_cm // (self.resolution * 2))
+        st_pose[:, 2] = 90. - (st_pose[:, 2])
+
+        rot_mat, trans_mat = get_grid(st_pose, agent_view.size(), self.device)
+
+        rotated = F.grid_sample(agent_view, rot_mat, align_corners=True)
+        translated = F.grid_sample(rotated, trans_mat, align_corners=True)
+
+        maps2 = torch.cat((maps_last.unsqueeze(1), translated.unsqueeze(1)), 1)
+
+        map_pred, _ = torch.max(maps2, 1)
+
+        return fp_map_pred, map_pred, pose_pred, current_poses
+        

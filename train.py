@@ -242,7 +242,7 @@ def main():
 
     # Transformer Storage: RGBD Image & Observation Map
     g_transformer = GlobalTransformerStorage(args.num_global_steps, 
-                                        num_scenes, (4, *obs.cpu().numpy().shape[2:]), g_observation_space.shape,
+                                        num_scenes, (4, *obs.cpu().numpy().shape[2:]), (obs.cpu().numpy().shape[1] - 4, *obs.cpu().numpy().shape[2:]), g_observation_space.shape,
                                         g_action_space, es).to(device) 
     # GlobalRolloutStorage(args.num_global_steps,
     #                                   num_scenes, g_observation_space.shape,
@@ -289,6 +289,7 @@ def main():
     extras[:, 1] = goal_cat_id
 
     g_transformer.obs[:, 0].copy_(obs[:, :4, ...])
+    g_transformer.segobs[:, 0].copy_(obs[:, 4:, ...])
     g_transformer.maps[:, 0].copy_(global_input)
     g_transformer.masks[:, 0].copy_(g_masks[0])
     g_transformer.extras[:, 0].copy_(extras.to(device))
@@ -297,16 +298,17 @@ def main():
     g_value, g_action, g_action_log_prob, _ = g_policy.act(
         g_transformer.obs,
         g_transformer.maps,
+        g_transformer.step, 
         g_transformer.masks,
         g_transformer.attn_masks,
         g_transformer.positional_embedding,
         extras=g_transformer.extras,
         deterministic=False
     )
-
+    
     cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
     global_goals = [[int(action[0] * local_w), int(action[1] * local_h)]
-                    for action in cpu_actions[:, 0, -1, ...]]
+                    for action in cpu_actions]
     global_goals = [[min(x, int(local_w - 1)), min(y, int(local_h - 1))]
                     for x, y in global_goals]
 
@@ -446,12 +448,13 @@ def main():
             # Add samples to global policy storage
             if step == 0:
                 g_transformer.obs[0].copy_(obs[:, :4, ...])
+                g_transformer.segobs[0].copy_(obs[:, 4:, ...])
                 g_transformer.maps[0].copy_(global_input)
                 g_transformer.extras[0].copy_(extras.to(device))
             else:
                 g_transformer.insert(
-                    obs[:, :4, ...], global_input,
-                    g_action[:, 0, -1, ...], g_action_log_prob[:, 0, -1, ...], g_value,
+                    obs[:, :4, ...], obs[:, 4:, ...], global_input,
+                    g_action, g_action_log_prob, g_value,
                     g_reward, g_masks, extras.to(device)
                 )
 
@@ -459,6 +462,7 @@ def main():
             g_value, g_action, g_action_log_prob, _ = g_policy.act(
                 g_transformer.obs,
                 g_transformer.maps,
+                g_transformer.step,
                 g_transformer.masks,
                 g_transformer.attn_masks,
                 g_transformer.positional_embedding,
@@ -468,7 +472,7 @@ def main():
             cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
             global_goals = [[int(action[0] * local_w),
                              int(action[1] * local_h)]
-                            for action in cpu_actions[:, 0, -1, ...]]
+                            for action in cpu_actions]
             global_goals = [[min(x, int(local_w - 1)),
                              min(y, int(local_h - 1))]
                             for x, y in global_goals]

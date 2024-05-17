@@ -33,6 +33,15 @@ def get_camera_matrix(width, height, fov):
     camera_matrix = Namespace(**camera_matrix)
     return camera_matrix
 
+def get_full_camera_matrix(width, height, hfov, vfov):
+    """Returns a camera matrix from image size and fov."""
+    xc = (width - 1.) / 2.
+    zc = (height - 1.) / 2.
+    fx = (width / 2.) / np.tan(np.deg2rad(hfov / 2.))
+    fz = (height / 2.) / np.tan(np.deg2rad(vfov / 2.))
+    camera_matrix = { 'xc': xc, 'zc': zc, 'fx': fx, 'fz': fz }
+    camera_matrix = Namespace(**camera_matrix)
+    return camera_matrix
 
 def get_point_cloud_from_z(Y, camera_matrix, scale=1):
     """Projects the depth image Y into a 3D point cloud.
@@ -59,6 +68,25 @@ def get_point_cloud_from_z(Y, camera_matrix, scale=1):
                           Z[..., np.newaxis]), axis=X.ndim)
     return XYZ
 
+
+def get_point_cloud_ba(rgbd_seq: torch.Tensor, 
+                       pose_seq: torch.Tensor, 
+                       camera_matrix: dict, 
+                       seg_seq: torch.Tensor, scale=1) -> torch.Tensor:
+    num_scene = rgbd_seq.shape[0]
+    depth_seq = rgbd_seq[:, :, 3, ...] # ndim: 5
+    x, z = np.meshgrid(np.arange(depth_seq.shape[-1]),
+                       np.arange(depth_seq.shape[-2] - 1, -1, -1))
+    for _ in range(depth_seq.ndim - 2): # 3 times expand
+        x = np.expand_dims(x, axis=0)
+        z = np.expand_dims(z, axis=0)
+    X = (x[::scale, ::scale] - camera_matrix.xc) * depth_seq[::scale, ::scale] / camera_matrix.sfx
+    Z = (z[::scale, ::scale] - camera_matrix.zc) * depth_seq[::scale, ::scale] / camera_matrix.fz
+    XYZ = np.concatenate((X[..., np.newaxis],
+                          depth_seq[::scale, ::scale][..., np.newaxis],
+                          Z[..., np.newaxis]), axis=X.ndim)
+    # num_scene X num_seq X H X W X 3
+    
 
 def transform_camera_view(XYZ, sensor_height, camera_elevation_degree):
     """

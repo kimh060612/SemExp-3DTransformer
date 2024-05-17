@@ -109,6 +109,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+*.cudagl
+
 
 # Spyder project settings
 .spyderproject

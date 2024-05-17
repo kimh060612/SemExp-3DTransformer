@@ -78,6 +78,8 @@ def get_args():
                         help="agent camera height in metres")
     parser.add_argument('--hfov', type=float, default=79.0,
                         help="horizontal field of view in degrees")
+    parser.add_argument('--vfov', type=float, default=64.0,
+                        help="vertical field of view in degrees")
     parser.add_argument('--turn_angle', type=float, default=30,
                         help="Agent turn angle in degrees")
     parser.add_argument('--min_depth', type=float, default=0.5,
