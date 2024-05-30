@@ -234,6 +234,7 @@ def main():
                        args.num_mini_batch, args.value_loss_coef,
                        args.entropy_coef, lr=args.lr, eps=args.eps,
                        max_grad_norm=args.max_grad_norm)
+    print("Number of Parameters: ", sum(p.numel() for p in g_policy.parameters()))
     
     global_input = torch.zeros(num_scenes, ngc, local_w, local_h)
     global_orientation = torch.zeros(num_scenes, 1).long()
@@ -242,7 +243,7 @@ def main():
 
     # Transformer Storage: RGBD Image & Observation Map
     g_transformer = GlobalTransformerStorage(args.num_global_steps, 
-                                        num_scenes, (4, *obs.cpu().numpy().shape[2:]), (obs.cpu().numpy().shape[1] - 4, *obs.cpu().numpy().shape[2:]), g_observation_space.shape,
+                                        num_scenes, (4, *obs.cpu().numpy().shape[2:]), g_observation_space.shape,
                                         g_action_space, es).to(device) 
     # GlobalRolloutStorage(args.num_global_steps,
     #                                   num_scenes, g_observation_space.shape,
@@ -289,13 +290,12 @@ def main():
     extras[:, 1] = goal_cat_id
 
     g_transformer.obs[:, 0].copy_(obs[:, :4, ...])
-    g_transformer.segobs[:, 0].copy_(obs[:, 4:, ...])
     g_transformer.maps[:, 0].copy_(global_input)
     g_transformer.masks[:, 0].copy_(g_masks[0])
     g_transformer.extras[:, 0].copy_(extras.to(device))
 
     # Run Global Policy (global_goals = Long-Term Goal)
-    g_value, g_action, g_action_log_prob, _ = g_policy.act(
+    g_value, g_action, g_action_log_prob, emb_vecs = g_policy.act(
         g_transformer.obs,
         g_transformer.maps,
         g_transformer.step, 
@@ -448,18 +448,17 @@ def main():
             # Add samples to global policy storage
             if step == 0:
                 g_transformer.obs[0].copy_(obs[:, :4, ...])
-                g_transformer.segobs[0].copy_(obs[:, 4:, ...])
                 g_transformer.maps[0].copy_(global_input)
                 g_transformer.extras[0].copy_(extras.to(device))
             else:
                 g_transformer.insert(
-                    obs[:, :4, ...], obs[:, 4:, ...], global_input,
+                    obs[:, :4, ...], global_input,
                     g_action, g_action_log_prob, g_value,
                     g_reward, g_masks, extras.to(device)
                 )
 
             # Sample long-term goal from global policy
-            g_value, g_action, g_action_log_prob, _ = g_policy.act(
+            g_value, g_action, g_action_log_prob, emb_vecs = g_policy.act(
                 g_transformer.obs,
                 g_transformer.maps,
                 g_transformer.step,
@@ -528,7 +527,7 @@ def main():
                     g_transformer.obs[:, :-1],
                     g_transformer.maps[:, :-1],
                     g_transformer.masks[:, :-1],
-                    g_transformer.attn_masks[:-1, :-1],
+                    g_transformer.attn_masks[:, :-1, :-1],
                     g_transformer.positional_embedding[:, :-1],
                     extras=g_transformer.extras[:, :-1]
                 ).detach()

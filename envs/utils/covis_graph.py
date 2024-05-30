@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import torch
+from scipy.spatial import cKDTree
 
 class Vec:
     def __init__(self, id, vector):
@@ -29,36 +30,36 @@ class Vec:
         return hash(self.id)
     
 class CoVisibilityGraph:
-    def __init__(self):
-        self.graph = {}  # 노드를 키로, 엣지를 값으로 갖는 딕셔너리
+    T = 0.5
     
-    def add_vector(self, vector):
-        if vector not in self.graph:
-            self.graph[vector] = {}
-
-    def add_edge(self, vector1, vector2, similarity):
-        if vector1 not in self.graph:
-            self.add_vector(vector1)
-        if vector2 not in self.graph:
-            self.add_vector(vector2)
+    def __init__(self, num_steps, device):
+        self.vertex = []
+        self.step_size = num_steps
+        self.now = 0
+        self.adj_matrix = np.ones((num_steps + 1, num_steps + 1)) # attention mask로 바꿀 예정
+        self.adj_matrix = np.triu(self.adj_matrix, k=1)
+        self.device = device
         
-        self.graph[vector1][vector2] = similarity
-        self.graph[vector2][vector1] = similarity
-
-    def get_common_similarity(self, vector1, vector2):
-         return self.graph[vector1].get(vector2, None)
+    def _vec_sim(self, vector1: torch.Tensor, vector2: torch.Tensor):
+        dot = torch.dot(vector1, vector2) # 제대로 작동
+        norm1 = torch.norm(vector1, p=2)
+        norm2 = torch.norm(vector2, p=2)
+        similarity = (dot / (norm1 * norm2)).item()
+        return (1 + similarity) / 2 # 0~1까지의 값으로 normalize
     
-    def get_edges(self): 
-        edges = {} # {(vec1, vec2): similarity, ...}
-        for vector1 in self.graph:
-            for vector2 in self.graph[vector1]:
-                if (vector2, vector1) not in edges.keys(): # 반대되는 edge가 있으면 컷
-                    similarity = self.graph[vector1][vector2]
-                    edges[(vector1, vector2)] = similarity
-        return edges
+    def add_node(self, vector: torch.Tensor):
+        edge = np.array([ False for _ in range(self.step_size + 1) ])
+        for idx, (t, v) in enumerate(self.vertex):
+            if self._vec_sim(v, vector) > self.T:
+                edge[idx] = True
+        self.vertex.append((self.now, vector))
+        if self.now + 1 >= self.step_size:
+            del self.vertex[0]
+        self.now = (self.now + 1) % self.step_size
+        self.adj_matrix[:,self.now] = edge.T
     
-    def get_nodes(self):
-        return list(self.graph.keys())
+    def get_attn(self):
+        return torch.from_numpy(self.adj_matrix).to(self.device)
 
 # vector matching
 def match_vector(vector1, vector2):

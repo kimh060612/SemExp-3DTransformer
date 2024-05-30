@@ -8,11 +8,11 @@ from torch import nn, Tensor
 class Transformer(nn.Module):
 
     def __init__(self, d_model=512, nhead=8, num_encoder_layers=6,
-                 num_decoder_layers=6, dim_feedforward=2048, dropout=0.1,
+                 num_decoder_layers=6, dim_feedforward=512, dropout=0.1,
                  activation="relu", normalize_before=False,
                  return_intermediate_dec=False):
         super().__init__()
-
+        
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
         encoder_norm = nn.LayerNorm(d_model) if normalize_before else None
@@ -49,6 +49,7 @@ class Transformer(nn.Module):
         tgt = tgt.permute(1, 0, 2)
         pos_embed = pos_embed.unsqueeze(-1).permute(1, 0, 2)
         query_embed = query_embed.unsqueeze(-1).permute(1, 0, 2)
+        attn_mask = attn_mask.clone().repeat(self.nhead, 1, 1)
         
         memory = self.encoder(src, mask=attn_mask, src_key_padding_mask=mask, pos=pos_embed)
         hs = self.decoder(tgt, memory, tgt_mask=attn_mask, memory_mask=attn_mask, memory_key_padding_mask=mask, pos=pos_embed, query_pos=query_embed)

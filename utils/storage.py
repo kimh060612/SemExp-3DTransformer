@@ -6,7 +6,7 @@ from collections import namedtuple
 import numpy as np
 import torch
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
-
+from model import ResNetCLIPEncoder
 
 def _flatten_helper(T, N, _tensor):
     return _tensor.view(T * N, *_tensor.size()[2:])
@@ -202,7 +202,9 @@ class GlobalRolloutStorage(RolloutStorage):
             action_log_probs, value_preds, rewards, masks)
 
 class TransformerStorage(object):
-    def __init__(self, num_steps, num_processes, obs_shape, seg_shape, map_shape, action_space, gamma=0.99):
+    T = 0.8
+    
+    def __init__(self, num_steps, num_processes, obs_shape, map_shape, action_space, gamma=0.99):
         if action_space.__class__.__name__ == 'Discrete':
             self.n_actions = 1
             action_type = torch.long
@@ -218,11 +220,10 @@ class TransformerStorage(object):
         ### step > num_steps : shift overall variables
         self.has_extras = False
         self.extras_size = None
+        self.image_clip = ResNetCLIPEncoder(device=torch.device('cuda'))
         ## Using num_processes as Batch Size
         ## Image Observation: RGBD Image
         self.obs = torch.zeros(num_processes, num_steps + 1, *obs_shape)
-        ## Semantic Observation: Segmentation Map
-        self.segobs = torch.zeros(num_processes, num_steps + 1, *seg_shape)
         ## Map Observation: K*M*M Tensor
         self.maps = torch.zeros(num_processes, num_steps + 1, *map_shape)
         ## Pose State: (x, y, \theta)
@@ -231,6 +232,8 @@ class TransformerStorage(object):
         ## Mask for Transformer
         self.attn_masks = torch.ones(num_steps + 1, num_steps + 1).bool()
         self.attn_masks = torch.triu(self.attn_masks, diagonal=1)
+        self.attn_masks = self.attn_masks.unsqueeze(0).repeat(num_processes, 1, 1)
+        self.attn_pos_mask = self.attn_masks.clone()
         self.masks = torch.ones(num_processes, num_steps + 1).bool()
         self.positional_embedding = self._build_pos_embedding(gamma, 1)
         ## Reward & Value function & Returns for PPO  
@@ -257,7 +260,6 @@ class TransformerStorage(object):
     
     def to(self, device):
         self.obs = self.obs.to(device)
-        self.segobs = self.segobs.to(device)
         self.maps = self.maps.to(device)
         self.pose_state = self.pose_state.to(device)
         self.rewards = self.rewards.to(device)
@@ -267,6 +269,7 @@ class TransformerStorage(object):
         self.actions = self.actions.to(device)
         self.masks = self.masks.to(device)
         self.attn_masks = self.attn_masks.to(device)
+        self.attn_pos_mask = self.attn_pos_mask.to(device)
         self.positional_embedding = self.positional_embedding.to(device)
         if self.has_extras:
             self.extras = self.extras.to(device)
@@ -285,18 +288,28 @@ class TransformerStorage(object):
             for step in reversed(range(self.rewards.size(0))):
                 self.returns[step] = self.returns[step + 1] * gamma * self.masks[:, step + 1] + self.rewards[step]
     
-    def insert(self, obs, segobs, map, actions, action_log_probs, value_preds, rewards, masks):
+    def _build_attn_mask(self, obs: torch.Tensor):
+        num_process, num_steps = obs.shape[:2]
+        img_emb = self.image_clip(obs.contiguous().view(-1, *obs.shape[2:])).view(num_process, num_steps, -1)
+        cur_emb = img_emb[:, [self.step + 1], ...].permute(0, 2, 1) # bsz * 1 *  emb
+        sim_emb = torch.matmul(img_emb, cur_emb) # (bsz * seq * emb) @ (bsz * emb * 1) -> (bsz * seq * 1)
+        emb_attn_vector = sim_emb > self.T
+        emb_attn_vector = emb_attn_vector.squeeze(-1)
+        self.attn_masks[:, :, self.step + 1] = emb_attn_vector & self.attn_pos_mask[:, :, self.step + 1]
+    
+    def insert(self, obs, map, actions, action_log_probs, value_preds, rewards, masks):
         self.obs[:, self.step + 1] = obs.clone()
-        self.segobs[:, self.step + 1] = segobs.clone()
         self.maps[:, self.step + 1] = map.clone()
         self.actions[self.step] = actions.view(-1, self.n_actions).clone()
         self.action_log_probs[self.step] = action_log_probs.clone()
         self.value_preds[self.step] = value_preds[:, -1].clone()
         self.rewards[self.step] = rewards.clone()
         self.masks[:, self.step + 1] = masks.clone()
-
+        self._build_attn_mask(self.obs)
+        
         if not self.loops == 0:
-            self.attn_masks = torch.cat([self.attn_masks[:, -1:], self.attn_masks[:, :-1]], dim=-1).cuda()
+            self.attn_masks = torch.cat([self.attn_masks[:, :, -1:], self.attn_masks[:, :, :-1]], dim=-1).cuda()
+            self.attn_pos_mask = torch.cat([self.attn_pos_mask[:, :, -1:], self.attn_pos_mask[:, :, :-1]], dim=-1).cuda()
             self.positional_embedding = torch.cat([self.positional_embedding[..., -1:], self.positional_embedding[..., :-1]], dim=-1).cuda()
         else:
             self.positional_embedding = self._build_pos_embedding(self.gamma, self.step)
@@ -309,7 +322,8 @@ class TransformerStorage(object):
         self.obs[:, 0] = self.obs[:, -1].clone()
         self.maps[:, 0] = self.maps[:, -1].clone()
         self.masks[:, 0] = self.masks[:, -1].clone()
-        self.attn_masks = torch.cat([self.attn_masks[:, -1:], self.attn_masks[:, :-1]], dim=-1).cuda()
+        self.attn_masks = torch.cat([self.attn_masks[:, :, -1:], self.attn_masks[:, :, :-1]], dim=-1).cuda()
+        self.attn_pos_mask = torch.cat([self.attn_pos_mask[:, :, -1:], self.attn_pos_mask[:, :, :-1]], dim=-1).cuda()
         self.positional_embedding = torch.cat([self.positional_embedding[..., -1:], self.positional_embedding[..., :-1]], dim=-1).cuda()
         if self.has_extras:
             self.extras[:, 0] = self.extras[:, -1].clone()
@@ -325,22 +339,22 @@ class TransformerStorage(object):
                 'value_preds': self.value_preds[:-1, s:e].view(-1),
                 'returns': self.returns[:-1, s:e].view(-1),
                 'masks': self.masks[s:e, :-1],
-                'attn_mask': self.attn_masks[:-1, :-1],
+                'attn_mask': self.attn_masks[s:e, :-1, :-1],
                 'old_action_log_probs': self.action_log_probs[:, s:e].view(-1),
                 'adv_targ': advantages[:, s:e].view(-1),
                 'extras': self.extras[s:e, :-1] if self.has_extras else None,
             } # .contiguous().view(-1, self.extras_size)
 
 class GlobalTransformerStorage(TransformerStorage):
-    def __init__(self, num_steps, num_processes, obs_shape, seg_shape, map_shape, action_space, extra_size):
-        super(GlobalTransformerStorage, self).__init__(num_steps, num_processes, obs_shape, seg_shape, map_shape, action_space)
+    def __init__(self, num_steps, num_processes, obs_shape, map_shape, action_space, extra_size):
+        super(GlobalTransformerStorage, self).__init__(num_steps, num_processes, obs_shape, map_shape, action_space)
         self.extras = torch.zeros((num_processes, num_steps + 1, extra_size), dtype=torch.long)
         self.has_extras = True
         self.extras_size = extra_size
         
-    def insert(self, obs, segobs, maps, actions, action_log_probs, value_preds, rewards, masks, extras):
+    def insert(self, obs, maps, actions, action_log_probs, value_preds, rewards, masks, extras):
         self.extras[:, self.step + 1] = extras.clone()
-        super(GlobalTransformerStorage, self).insert(obs, segobs, maps, actions, action_log_probs, value_preds, rewards, masks)
+        super(GlobalTransformerStorage, self).insert(obs, maps, actions, action_log_probs, value_preds, rewards, masks)
     
     @property
     def segobservation(self):

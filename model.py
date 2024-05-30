@@ -138,20 +138,20 @@ class TransformerPolicy(nn.Module):
     def __init__(self, map_shape, hidden_size=512, num_sem_categories=16):
         super(TransformerPolicy, self).__init__()
         
-        self.transformer_net = Transformer(d_model=512, num_decoder_layers=2, num_encoder_layers=2)
-        self.map3d_emb = Conv3dMap(map_shape, 256, num_sem_categories, hidden_size)
+        self.transformer_net = Transformer(d_model=256, num_decoder_layers=1, num_encoder_layers=1)
+        self.map3d_emb = Conv3dMap(map_shape, 128, num_sem_categories, hidden_size)
         self.image_clip = ResNetCLIPEncoder(device=torch.device('cuda'))
         
-        self.img_emb_linear1 = nn.Linear(2048, 1024)
-        self.img_emb_linear2 = nn.Linear(1024, 256)
+        self.img_emb_linear1 = nn.Linear(2048, 512)
+        self.img_emb_linear2 = nn.Linear(512, 128)
         
-        self.critic_linear = nn.Linear(512, 1)
-        self.orientation_emb = nn.Embedding(72, 256)
-        self.goal_emb = nn.Embedding(num_sem_categories, 256)
+        self.critic_linear = nn.Linear(256, 1)
+        self.orientation_emb = nn.Embedding(72, 128)
+        self.goal_emb = nn.Embedding(num_sem_categories, 128)
     
     @property
     def output_size(self):
-        return 512
+        return 256
     
     def _check_nan(self, tensor, name):
         if torch.isnan(tensor).any():
@@ -181,14 +181,8 @@ class TransformerPolicy(nn.Module):
         if isna :
             self._check_nan(img_emb, "Image Embedding")
             self._check_nan(map_emb, "Map Embedding")
-        #     print("Mask: ", masks)
-        #     print("Pos Emb: ", pos_emb)
         isna = self._check_nan(map_emb, "Map")
-        # if isna:
-        #     print(x_map)
         isna = self._check_nan(tgt_emb, "Target")
-        # if isna:
-        #     print(extras)
         return _critic.squeeze(-1), scene_emb, map_emb
 
 class RL_Transformer_Policy(nn.Module):
@@ -228,7 +222,7 @@ class RL_Transformer_Policy(nn.Module):
             action = dist.sample()
         action_log_probs = dist.log_probs(action)
 
-        return value, action, action_log_probs, map_emb
+        return value, action, action_log_probs, actor_features.detach()
 
     def get_value(self, inputs, maps, masks, attn_mask, pos_emb, extras=None):
         value, _, _ = self(inputs, maps, masks, attn_mask, extras, pos_emb)
