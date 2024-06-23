@@ -2,7 +2,7 @@
 -----
 This repository is for Robot Vision Capstone Design Project in KyungHee Univ. 2024 spring semester  
 Our model's Architecture is like:  
-[Final Architecture](./docs/Real_Final_Architecture.png) <br />
+![Final Architecture](./docs/Real_Final_Architecture.png) <br />
 
 This repository contains:
 - SemEmb train & evaluation code
