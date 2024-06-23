@@ -15,7 +15,7 @@ from arguments import get_args
 import algo
 
 os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_VISLBE_DEVICES"] = "0"
+os.environ["CUDA_VISLBE_DEVICES"] = "0,1"
 
 
 def main():
@@ -57,9 +57,9 @@ def main():
         episode_spl = []
         episode_dist = []
         for _ in range(args.num_processes):
-            episode_success.append(deque(maxlen=num_episodes))
-            episode_spl.append(deque(maxlen=num_episodes))
-            episode_dist.append(deque(maxlen=num_episodes))
+            episode_success.append(deque(maxlen=num_episodes * 5))
+            episode_spl.append(deque(maxlen=num_episodes * 5))
+            episode_dist.append(deque(maxlen=num_episodes * 5))
 
     else:
         episode_success = deque(maxlen=1000)

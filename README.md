@@ -1,148 +1,94 @@
-# Object Goal Navigation using Goal-Oriented Semantic Exploration
-This is a PyTorch implementation of the NeurIPS-20 paper:
+# SemEmb: KHU Robot-Vision Capstone Design Project
+-----
+This repository is for Robot Vision Capstone Design Project in KyungHee Univ. 2024 spring semester  
+Our model's Architecture is like:  
+[Final Architecture](./docs/Real_Final_Architecture.png) <br />
 
-[Object Goal Navigation using Goal-Oriented Semantic Exploration](https://arxiv.org/pdf/2007.00643.pdf)<br />
-Devendra Singh Chaplot, Dhiraj Gandhi, Abhinav Gupta, Ruslan Salakhutdinov<br />
-Carnegie Mellon University, Facebook AI Research
+This repository contains:
+- SemEmb train & evaluation code
+- Docker file for SemEmb and Habitat simulations 
 
-Winner of the [CVPR 2020 Habitat ObjectNav Challenge](https://aihabitat.org/challenge/2020/).
+## Install dependencies with Docker 
+-----
 
-Project Website: https://devendrachaplot.github.io/projects/semantic-exploration
+To install dependencies for SemEmb, we can use docker.
 
-![example](./docs/example.gif)
+1. Build Docker image (docker image tag for $version): 
 
-### Overview:
-The Goal-Oriented Semantic Exploration (SemExp) model consists of three modules: a Semantic Mapping Module, a Goal-Oriented Semantic Policy, and a deterministic Local Policy. 
-As shown below, the Semantic Mapping model builds a semantic map over time. The Goal-Oriented Semantic Policy selects a long-term goal based on the semantic
-map to reach the given object goal efficiently. A deterministic local policy based on analytical planners is used to take low-level navigation actions to reach the long-term goal.
-
-![overview](./docs/overview.jpg)
-
-### This repository contains:
-- Episode train and test datasets for [Object Goal Navigation](https://arxiv.org/pdf/2007.00643.pdf) task for the Gibson dataset in the Habitat Simulator.
-- The code to train and evaluate the Semantic Exploration (SemExp) model on the Object Goal Navigation task.
-- Pretrained SemExp model.
-
-## Installing Dependencies
-- We use earlier versions of [habitat-sim](https://github.com/facebookresearch/habitat-sim) and [habitat-lab](https://github.com/facebookresearch/habitat-lab) as specified below:
-
-Installing habitat-sim:
 ```
-git clone https://github.com/facebookresearch/habitat-sim.git
-cd habitat-sim; git checkout tags/v0.1.5; 
-pip install -r requirements.txt; 
-python setup.py install --headless
-python setup.py install # (for Mac OS)
+bash buid_dimage.sh $version
 ```
 
-Installing habitat-lab:
-```
-git clone https://github.com/facebookresearch/habitat-lab.git
-cd habitat-lab; git checkout tags/v0.1.5; 
-pip install -e .
-```
-Check habitat installation by running `python examples/benchmark.py` in the habitat-lab folder.
+2. run docker container:
 
-- Install [pytorch](https://pytorch.org/) according to your system configuration. The code is tested on pytorch v1.6.0 and cudatoolkit v10.2. If you are using conda:
 ```
-conda install pytorch==1.6.0 torchvision==0.7.0 cudatoolkit=10.2 #(Linux with GPU)
-conda install pytorch==1.6.0 torchvision==0.7.0 -c pytorch #(Mac OS)
+bash run_docker_con.sh
 ```
 
-- Install [detectron2](https://github.com/facebookresearch/detectron2/) according to your system configuration. If you are using conda:
-```
-python -m pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.6/index.html #(Linux with GPU)
-CC=clang CXX=clang++ ARCHFLAGS="-arch x86_64" python -m pip install 'git+https://github.com/facebookresearch/detectron2.git' #(Mac OS)
-```
+After run docker container, you can access container with command below:
 
-### Docker and Singularity images:
-We provide experimental [docker](https://www.docker.com/) and [singularity](https://sylabs.io/) images with all the dependencies installed, see [Docker Instructions](./docs/DOCKER_INSTRUCTIONS.md).
-
-
-## Setup
-Clone the repository and install other requirements:
 ```
-git clone https://github.com/devendrachaplot/Object-Goal-Navigation/
-cd Object-Goal-Navigation/;
-pip install -r requirements.txt
-```
-
-### Downloading scene dataset
-- Download the Gibson dataset using the instructions here: https://github.com/facebookresearch/habitat-lab#scenes-datasets (download the 11GB file `gibson_habitat_trainval.zip`)
-- Move the Gibson scene dataset or create a symlink at `data/scene_datasets/gibson_semantic`. 
-
-### Downloading episode dataset
-- Download the episode dataset:
-```
-wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1tslnZAkH8m3V5nP8pbtBmaR2XEfr8Rau' -O objectnav_gibson_v1.1.zip
-```
-- Unzip the dataset into `data/datasets/objectnav/gibson/v1.1/`
-
-### Setting up datasets
-The code requires the datasets in a `data` folder in the following format (same as habitat-lab):
-```
-Object-Goal-Navigation/
-  data/
-    scene_datasets/
-      gibson_semantic/
-        Adrian.glb
-        Adrian.navmesh
-        ...
-    datasets/
-      objectnav/
-        gibson/
-          v1.1/
-            train/
-            val/
+sudo nvidia-docker exec -it <container name> /bin/bash
 ```
 
 
-### Test setup
-To verify that the data is setup correctly, run:
-```
-python test.py --agent random -n1 --num_eval_episodes 1 --auto_gpu_config 0
-```
+## Training
+-----
 
-## Usage
+To train & evaluate SemEmb, you can use following scripts
 
-### Training:
-For training the SemExp model on the Object Goal Navigation task:
+- Train
+
 ```
-python main.py
+CUDA_VISIBLE_DEVICES=0,1 python3 train.py -n 1 --auto_gpu_config=0 --num_global_steps=5 --num_mini_batch=3 --exp_name=<experiment name>
 ```
 
-### Downloading pre-trained models
+Arguments descriptions:  
+- n: number of process for Habitat simulator (batch size)
+- auto_gpu_config: turn on/off GPU auto configuration (0 for off, 1 for on)
+- num_global_steps: Number of timesteps for transformer
+- num_mini_batch: PPO's minibatch size
+- exp_name: experiment tag (result will be saved in following path)
+
+- Evaluation
+
 ```
-mkdir pretrained_models;
-wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=171ZA7XNu5vi3XLpuKs8DuGGZrYyuSjL0' -O pretrained_models/sem_exp.pth
+CUDA_VISIBLE_DEVICES=0 python3 train.py --split val --eval 1 --load <checkpoint path> -n 1 --auto_gpu_config=0
 ```
 
-### For evaluation: 
-For evaluating the pre-trained model:
+Argument descriptions:  
+- split: dataset type(train/validation)
+- eval: turn on the evaluation mode
+- load: mode checkpoint path
+- n: number of process for Habitat simulator (batch size)
+- auto_gpu_config: turn on/off GPU auto configuration (0 for off, 1 for on)
+
+## Database setup
+-----
+
+We use gibson dataset for this study. Gibson dataset is avaliable in the [link](https://github.com/facebookresearch/habitat-lab#scenes-datasets).  
+Download the Gibson dataset using the instructions in the link.
+
+- Setting up datasets
+
+The code requires the datasets in a specific folder in the following format (same as habitat-lab):  
+
 ```
-python main.py --split val --eval 1 --load pretrained_models/sem_exp.pth
+data/
+  scene_datasets/
+    gibson_semantic/
+      Adrian.glb
+      Adrian.navmesh
+      ...
+  datasets/
+    objectnav/
+      gibson/
+        v1.1/
+          train/
+          val/
 ```
 
-For visualizing the agent observations and predicted semantic map, add `-v 1` as an argument to the above command.
-
-The pre-trained model should get 0.657 Success, 0.339 SPL and 1.474 DTG.
-
-For more detailed instructions, see [INSTRUCTIONS](./docs/INSTRUCTIONS.md).
-
-
-## Cite as
->Chaplot, D.S., Gandhi, D., Gupta, A. and Salakhutdinov, R., 2020. Object Goal Navigation using Goal-Oriented Semantic Exploration. In Neural Information Processing Systems (NeurIPS-20). ([PDF](https://arxiv.org/pdf/2007.00643.pdf))
-
-### Bibtex:
-```
-@inproceedings{chaplot2020object,
-  title={Object Goal Navigation using Goal-Oriented Semantic Exploration},
-  author={Chaplot, Devendra Singh and Gandhi, Dhiraj and
-            Gupta, Abhinav and Salakhutdinov, Ruslan},
-  booktitle={In Neural Information Processing Systems (NeurIPS)},
-  year={2020}
-  }
-```
+You can set the dataset path for 'data' directory with docker container volume mount.
 
 ## Related Projects
 - This project builds on the [Active Neural SLAM](https://devendrachaplot.github.io/projects/Neural-SLAM) paper. The code and pretrained models for the Active Neural SLAM system are available at:
