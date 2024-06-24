@@ -8,6 +8,34 @@ This repository contains:
 - SemEmb train & evaluation code
 - Docker file for SemEmb and Habitat simulations 
 
+## Ideas
+-----
+
+Our team's main contribution is like:  
+- Long-Term Embedding vector memory for robust transformer navigation policy
+- co-visible attention mask to compensate the information loss from compression
+
+## Experiments
+-----
+
+Our experiment result seems like overwhelming SemExp. However, our simulation made unstable results with respect to the batch size.  
+Model’s performance was reduced with larger batch size. We can not figure the reason why evaluation metrics shrinks in larger batch size.  
+So, we can not convince that our model gets better performance than SemExp. We think that additional study is needed.  
+
+![Experiment Result](./docs/FinalExp.png) <br />
+
+## Conclusion
+-----
+
+From the experiment result, we can not convince that our contribution works better than the existing works.   
+Although our experiments failed, we can find other possibilities to enhance the performance and contribute to the research domain in Embodied QA.  
+Our further work may be:  
+- Review the SemExp and Habitat Simulator code to figure out the malfunction in evaluations
+- Train SemEmb with larger GPU and extend SemEmb to larger model size
+- Propose another novelties in order to get better performance
+- Extend our model to another dataset like MP3D or other simulators
+
+
 ## Install dependencies with Docker 
 -----
 
